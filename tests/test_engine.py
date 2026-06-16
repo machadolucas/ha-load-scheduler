@@ -316,6 +316,39 @@ def test_non_sequential_prefers_solar_and_labels_source():
     assert periods[0].source == RunSource.SOLAR
 
 
+# --------------------------------------------------------------------------- #
+# min-run / min-off (compressor protection)
+# --------------------------------------------------------------------------- #
+
+
+def test_min_off_bridges_short_gaps():
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    # Cheapest 3 slots are 0, 1, 3 (price 1); the 15-min gap at slot 2 is < min_off.
+    slots = make_slots(start, [1, 1, 9, 1, 9])
+    params = LoadParams(
+        mode=ScheduleMode.NON_SEQUENTIAL,
+        target_minutes=45,
+        window=full_window(slots),
+        min_off_minutes=30,
+    )
+    periods = engine.compute_plan(slots, params)
+    assert len(periods) == 1  # the short off-gap is bridged
+    assert periods[0].minutes == pytest.approx(60)
+
+
+def test_min_run_drops_short_fragment():
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    slots = make_slots(start, [1, 9, 9, 9])
+    params = LoadParams(
+        mode=ScheduleMode.NON_SEQUENTIAL,
+        target_minutes=15,
+        window=full_window(slots),
+        min_run_minutes=30,
+    )
+    # The only run (15 min) is shorter than min_run, so nothing is scheduled.
+    assert engine.compute_plan(slots, params) == []
+
+
 # DST correctness is handled at the boundary, not here: price_source normalises
 # all slots to UTC (a DST-free zone) before they reach the engine, and the
 # window resolver anchors to local wall-clock. The engine therefore only ever

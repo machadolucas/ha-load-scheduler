@@ -19,6 +19,8 @@ from .const import (
     CONF_EARLIEST,
     CONF_FEEDBACK_ENTITY,
     CONF_FEEDBACK_IDLE_W,
+    CONF_MIN_OFF,
+    CONF_MIN_RUN,
     CONF_MIN_SEPARATION,
     CONF_MIN_SERVICE,
     CONF_MODE,
@@ -62,6 +64,8 @@ class LoadConfig:
     deadline: time | None
     runs_per_day: int
     min_separation_minutes: float
+    min_run_minutes: float
+    min_off_minutes: float
     cap: float | None
     min_service_minutes: float
     controlled_entity: str | None
@@ -85,6 +89,8 @@ class LoadConfig:
             deadline=_parse_time(data.get(CONF_DEADLINE)),
             runs_per_day=int(data.get(CONF_RUNS_PER_DAY, DEFAULT_RUNS_PER_DAY)),
             min_separation_minutes=float(data.get(CONF_MIN_SEPARATION, DEFAULT_MIN_SEPARATION)),
+            min_run_minutes=float(data.get(CONF_MIN_RUN, 0)),
+            min_off_minutes=float(data.get(CONF_MIN_OFF, 0)),
             cap=float(cap) if cap is not None else None,
             min_service_minutes=float(data.get(CONF_MIN_SERVICE, DEFAULT_MIN_SERVICE)),
             controlled_entity=data.get(CONF_CONTROLLED_ENTITY),
@@ -128,4 +134,6 @@ def build_load_params(
         solar_enabled=solar_enabled,
         runs_per_day=cfg.runs_per_day,
         min_separation_minutes=cfg.min_separation_minutes,
+        min_run_minutes=cfg.min_run_minutes,
+        min_off_minutes=cfg.min_off_minutes,
     )

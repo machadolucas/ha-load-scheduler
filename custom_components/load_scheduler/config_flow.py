@@ -37,6 +37,8 @@ from .const import (
     CONF_FEEDBACK_ENTITY,
     CONF_FEEDBACK_IDLE_W,
     CONF_LIVE_SELL_ENTITY,
+    CONF_MIN_OFF,
+    CONF_MIN_RUN,
     CONF_MIN_SEPARATION,
     CONF_MIN_SERVICE,
     CONF_MODE,
@@ -200,6 +202,12 @@ def _load_schema(defaults: dict) -> vol.Schema:
             vol.Optional(
                 CONF_MIN_SEPARATION, description=suggest(CONF_MIN_SEPARATION)
             ): _minutes_selector(maximum=720),
+            vol.Optional(CONF_MIN_RUN, description=suggest(CONF_MIN_RUN)): _minutes_selector(
+                maximum=720
+            ),
+            vol.Optional(CONF_MIN_OFF, description=suggest(CONF_MIN_OFF)): _minutes_selector(
+                maximum=720
+            ),
             vol.Optional(
                 CONF_MIN_SERVICE, description=suggest(CONF_MIN_SERVICE)
             ): _minutes_selector(),

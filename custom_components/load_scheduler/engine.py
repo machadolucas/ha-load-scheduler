@@ -105,6 +105,9 @@ class LoadParams:
     # Sequential only:
     runs_per_day: int = 1
     min_separation_minutes: float = 0.0
+    # Compressor protection (both modes):
+    min_run_minutes: float = 0.0
+    min_off_minutes: float = 0.0
 
 
 def effective_cost(slot: Slot, draw_kw: float | None, solar_enabled: bool) -> float:
@@ -330,8 +333,37 @@ def compute_plan(slots: list[Slot], params: LoadParams) -> list[Period]:
     is responsible for not actuating them.
     """
     if params.mode is ScheduleMode.NON_SEQUENTIAL:
-        return plan_non_sequential(slots, params)
-    return plan_sequential(slots, params)
+        periods = plan_non_sequential(slots, params)
+    else:
+        periods = plan_sequential(slots, params)
+    if params.min_run_minutes or params.min_off_minutes:
+        periods = enforce_min_run_off(periods, params.min_run_minutes, params.min_off_minutes)
+    return periods
+
+
+def enforce_min_run_off(periods: list[Period], min_run: float, min_off: float) -> list[Period]:
+    """Bridge too-short off-gaps and drop too-short runs (compressor protection).
+
+    Off-gaps shorter than ``min_off`` are filled (the load keeps running through
+    them rather than short-cycling); any remaining period shorter than
+    ``min_run`` is then dropped.
+    """
+    if not periods:
+        return []
+    ordered = sorted(periods, key=lambda p: p.start)
+    merged = [Period(ordered[0].start, ordered[0].end, ordered[0].source, ordered[0].avg_cost)]
+    for p in ordered[1:]:
+        last = merged[-1]
+        gap = (p.start - last.end).total_seconds() / 60.0
+        if gap < min_off:
+            w_last, w_p = last.minutes, p.minutes
+            total = w_last + w_p
+            last.avg_cost = (last.avg_cost * w_last + p.avg_cost * w_p) / total if total else 0.0
+            last.source = last.source if last.source == p.source else RunSource.MIXED
+            last.end = max(last.end, p.end)
+        else:
+            merged.append(Period(p.start, p.end, p.source, p.avg_cost))
+    return [p for p in merged if p.minutes >= min_run - _EPS]
 
 
 def merge_periods(periods: list[Period]) -> list[Period]:
