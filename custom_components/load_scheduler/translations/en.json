@@ -15,10 +15,24 @@
           "sell_price_entity": "What you earn exporting 1 kWh. Enables buy-vs-sell solar arbitration: running on solar costs the foregone sell price.",
           "solar_forecast_entity": "A per-slot PV forecast (e.g. Solcast 'detailedForecast'). Enables reducing scheduled runtime by expected free solar."
         }
+      },
+      "reconfigure": {
+        "title": "Load Scheduler",
+        "description": "Update the shared price and solar forecast sources.",
+        "data": {
+          "name": "Name",
+          "buy_price_entity": "Buy-price forecast sensor",
+          "sell_price_entity": "Sell-price forecast sensor (optional)",
+          "solar_forecast_entity": "Solar-production forecast sensor (optional)"
+        }
       }
     },
+    "error": {
+      "invalid_price_entity": "That sensor doesn't expose a recognised price forecast (no today/tomorrow price list found in its attributes)."
+    },
     "abort": {
-      "already_configured": "This price sensor is already configured."
+      "already_configured": "This price sensor is already configured.",
+      "reconfigure_successful": "Sources updated."
     }
   },
   "config_subentries": {
@@ -28,7 +42,7 @@
       },
       "entry_type": "Load",
       "step": {
-        "user": {
+        "init": {
           "title": "Add a load",
           "description": "Configure how this load is scheduled into cheap hours. Leave the window empty to search the next 24 hours; set an earliest start and a deadline (e.g. 21:00 → 07:00) to constrain it.",
           "data": {

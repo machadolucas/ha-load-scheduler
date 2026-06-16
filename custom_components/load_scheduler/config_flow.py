@@ -1,13 +1,12 @@
 """Config flow for Load Scheduler.
 
-The hub flow selects the shared price (and optional solar) sources. Each load is
-added as a ``ConfigSubentry`` via the per-load wizard below
-(``async_get_supported_subentry_types``).
+The hub flow selects the shared price (and optional solar) sources and supports
+reconfigure. Each load is added/edited as a ``ConfigSubentry`` via the per-load
+wizard (``async_get_supported_subentry_types``), which shares one ``init`` step
+between add and reconfigure.
 
-M2 scope: a single-step load wizard covering the core scheduling parameters.
-Solar options, the pluggable parameter sources and reconfigure flows are layered
-on in later milestones; price-source validation (the ``PriceAdaptor`` pattern)
-lands in M3.
+Solar options and the pluggable parameter sources are layered on in later
+milestones.
 """
 
 from __future__ import annotations
@@ -16,15 +15,17 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import (
+    SOURCE_USER,
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
     ConfigSubentryFlow,
     SubentryFlowResult,
 )
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import selector
 
+from . import price_source
 from .const import (
     CONF_BUY_PRICE_ENTITY,
     CONF_CONTROLLED_ENTITY,
@@ -67,6 +68,108 @@ def _minutes_selector(maximum: int = TARGET_MAX) -> selector.NumberSelector:
     )
 
 
+def _validate_price(hass: HomeAssistant, entity_id: str) -> str | None:
+    """Return an error key if the price entity exists but isn't parseable.
+
+    A not-yet-available entity is allowed (the coordinator + a repair issue
+    handle that), so setup isn't blocked when the price integration loads later.
+    """
+    state = hass.states.get(entity_id)
+    if state is None:
+        return None
+    try:
+        price_source.detect_format(dict(state.attributes))
+    except price_source.PriceFormatError:
+        return "invalid_price_entity"
+    return None
+
+
+def _hub_schema(defaults: dict) -> vol.Schema:
+    def suggest(key):
+        return {"suggested_value": defaults.get(key)}
+
+    return vol.Schema(
+        {
+            vol.Optional(CONF_NAME, default=defaults.get(CONF_NAME, DEFAULT_NAME)): str,
+            vol.Required(
+                CONF_BUY_PRICE_ENTITY, description=suggest(CONF_BUY_PRICE_ENTITY)
+            ): _SENSOR,
+            vol.Optional(
+                CONF_SELL_PRICE_ENTITY, description=suggest(CONF_SELL_PRICE_ENTITY)
+            ): _SENSOR,
+            vol.Optional(
+                CONF_SOLAR_FORECAST_ENTITY,
+                description=suggest(CONF_SOLAR_FORECAST_ENTITY),
+            ): _SENSOR,
+        }
+    )
+
+
+def _load_schema(defaults: dict) -> vol.Schema:
+    def suggest(key):
+        return {"suggested_value": defaults.get(key)}
+
+    return vol.Schema(
+        {
+            vol.Required(CONF_NAME, description=suggest(CONF_NAME)): str,
+            vol.Required(
+                CONF_MODE, default=defaults.get(CONF_MODE, MODE_NON_SEQUENTIAL)
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        MODE_NON_SEQUENTIAL,
+                        MODE_SEQUENTIAL,
+                        MODE_INFORMATIONAL,
+                    ],
+                    translation_key="mode",
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Required(
+                CONF_TARGET_MINUTES,
+                default=defaults.get(CONF_TARGET_MINUTES, DEFAULT_TARGET_MINUTES),
+            ): _minutes_selector(),
+            vol.Optional(
+                CONF_EARLIEST, description=suggest(CONF_EARLIEST)
+            ): selector.TimeSelector(),
+            vol.Optional(
+                CONF_DEADLINE, description=suggest(CONF_DEADLINE)
+            ): selector.TimeSelector(),
+            vol.Required(
+                CONF_RUNS_PER_DAY,
+                default=defaults.get(CONF_RUNS_PER_DAY, DEFAULT_RUNS_PER_DAY),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=1, max=10, step=1, mode=selector.NumberSelectorMode.BOX
+                )
+            ),
+            vol.Optional(
+                CONF_MIN_SEPARATION, description=suggest(CONF_MIN_SEPARATION)
+            ): _minutes_selector(maximum=720),
+            vol.Optional(
+                CONF_MIN_SERVICE, description=suggest(CONF_MIN_SERVICE)
+            ): _minutes_selector(),
+            vol.Optional(
+                CONF_PRICE_CAP, description=suggest(CONF_PRICE_CAP)
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=5, step=0.001, mode=selector.NumberSelectorMode.BOX
+                )
+            ),
+            vol.Optional(
+                CONF_CONTROLLED_ENTITY, description=suggest(CONF_CONTROLLED_ENTITY)
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain=["switch", "input_boolean"])
+            ),
+        }
+    )
+
+
+def _clean(user_input: dict) -> dict:
+    """Drop unset optionals so model defaults apply cleanly."""
+    return {k: v for k, v in user_input.items() if v not in (None, "")}
+
+
 class LoadSchedulerConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle the hub config flow."""
 
@@ -75,22 +178,37 @@ class LoadSchedulerConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Create the hub: pick the price (and optional solar) sources."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            await self.async_set_unique_id(user_input[CONF_BUY_PRICE_ENTITY])
-            self._abort_if_unique_id_configured()
-            return self.async_create_entry(
-                title=user_input.get(CONF_NAME, DEFAULT_NAME), data=user_input
-            )
-
-        schema = vol.Schema(
-            {
-                vol.Optional(CONF_NAME, default=DEFAULT_NAME): str,
-                vol.Required(CONF_BUY_PRICE_ENTITY): _SENSOR,
-                vol.Optional(CONF_SELL_PRICE_ENTITY): _SENSOR,
-                vol.Optional(CONF_SOLAR_FORECAST_ENTITY): _SENSOR,
-            }
+            error = _validate_price(self.hass, user_input[CONF_BUY_PRICE_ENTITY])
+            if error:
+                errors["base"] = error
+            else:
+                await self.async_set_unique_id(user_input[CONF_BUY_PRICE_ENTITY])
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(
+                    title=user_input.get(CONF_NAME, DEFAULT_NAME), data=user_input
+                )
+        return self.async_show_form(
+            step_id="user", data_schema=_hub_schema(user_input or {}), errors=errors
         )
-        return self.async_show_form(step_id="user", data_schema=schema)
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Edit the hub's price/solar sources."""
+        entry = self._get_reconfigure_entry()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            error = _validate_price(self.hass, user_input[CONF_BUY_PRICE_ENTITY])
+            if error:
+                errors["base"] = error
+            else:
+                return self.async_update_reload_and_abort(entry, data_updates=user_input)
+        defaults = {**entry.data, **(user_input or {})}
+        return self.async_show_form(
+            step_id="reconfigure", data_schema=_hub_schema(defaults), errors=errors
+        )
 
     @classmethod
     @callback
@@ -102,53 +220,33 @@ class LoadSchedulerConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class LoadSubentryFlowHandler(ConfigSubentryFlow):
-    """Wizard for adding a load to the hub."""
+    """Add or reconfigure a load (one shared ``init`` step)."""
+
+    _defaults: dict
+
+    @property
+    def _is_new(self) -> bool:
+        return self.source == SOURCE_USER
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
-        """Collect the load's scheduling parameters."""
-        if user_input is not None:
-            # Drop unset optionals so model defaults apply cleanly.
-            data = {k: v for k, v in user_input.items() if v not in (None, "")}
-            return self.async_create_entry(title=data[CONF_NAME], data=data)
+        self._defaults = {}
+        return await self.async_step_init(user_input)
 
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_NAME): str,
-                vol.Required(CONF_MODE, default=MODE_NON_SEQUENTIAL): (
-                    selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=[
-                                MODE_NON_SEQUENTIAL,
-                                MODE_SEQUENTIAL,
-                                MODE_INFORMATIONAL,
-                            ],
-                            translation_key="mode",
-                            mode=selector.SelectSelectorMode.DROPDOWN,
-                        )
-                    )
-                ),
-                vol.Required(
-                    CONF_TARGET_MINUTES, default=DEFAULT_TARGET_MINUTES
-                ): _minutes_selector(),
-                vol.Optional(CONF_EARLIEST): selector.TimeSelector(),
-                vol.Optional(CONF_DEADLINE): selector.TimeSelector(),
-                vol.Optional(
-                    CONF_RUNS_PER_DAY, default=DEFAULT_RUNS_PER_DAY
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=1, max=10, step=1, mode=selector.NumberSelectorMode.BOX
-                    )
-                ),
-                vol.Optional(CONF_MIN_SEPARATION): _minutes_selector(maximum=720),
-                vol.Optional(CONF_MIN_SERVICE): _minutes_selector(),
-                vol.Optional(CONF_PRICE_CAP): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=0, max=5, step=0.001, mode=selector.NumberSelectorMode.BOX
-                    )
-                ),
-                vol.Optional(CONF_CONTROLLED_ENTITY): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain=["switch", "input_boolean"])
-                ),
-            }
-        )
-        return self.async_show_form(step_id="user", data_schema=schema)
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        self._defaults = dict(self._get_reconfigure_subentry().data)
+        return await self.async_step_init(user_input)
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+        if user_input is not None:
+            data = _clean(user_input)
+            if self._is_new:
+                return self.async_create_entry(title=data[CONF_NAME], data=data)
+            return self.async_update_and_abort(
+                self._get_entry(),
+                self._get_reconfigure_subentry(),
+                title=data[CONF_NAME],
+                data=data,
+            )
+        return self.async_show_form(step_id="init", data_schema=_load_schema(self._defaults))
