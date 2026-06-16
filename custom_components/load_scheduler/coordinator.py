@@ -45,6 +45,7 @@ from .const import (
 from .engine import Period, RunSource
 from .models import LoadConfig, build_load_params
 from .persistence import RuntimeStore
+from .windows import next_time
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -295,6 +296,17 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
     def _solar_enabled(self, cfg: LoadConfig) -> bool:
         return cfg.allow_solar and bool(self._solar_entities)
 
+    def _failsafe_periods(self, cfg: LoadConfig, rt: LoadRuntime, now: datetime) -> list[Period]:
+        """A fixed-time fallback run used when no price forecast is available."""
+        if cfg.failsafe_start is None:
+            return []
+        minutes = max(rt.target_minutes, cfg.min_service_minutes)
+        if minutes <= 0:
+            return []
+        start = next_time(now, cfg.failsafe_start)
+        end = start + timedelta(minutes=minutes)
+        return [Period(dt_util.as_utc(start), dt_util.as_utc(end), RunSource.GRID, 0.0)]
+
     @staticmethod
     def _consume_excess(
         residual: dict[datetime, float],
@@ -369,7 +381,9 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
                     if solar:
                         self._consume_excess(residual, base_slots, periods, cfg.draw_kw)
                 else:
-                    plan.error = "no_price_data"
+                    periods = self._failsafe_periods(cfg, rt, now)
+                    if not periods:
+                        plan.error = "no_price_data"
             # A manual boost overrides both the price plan and the enable switch.
             if rt.boost_until and now_utc < rt.boost_until:
                 boost = Period(now_utc, rt.boost_until, RunSource.GRID, 0.0)

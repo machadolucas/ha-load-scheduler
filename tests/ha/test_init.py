@@ -115,3 +115,33 @@ async def test_no_price_data_reports_status(hass: HomeAssistant) -> None:
     subentry_id = next(iter(entry.subentries))
     sched = hass.states.get(_entity_id(hass, subentry_id, "sensor", "schedule"))
     assert sched.attributes["status"] == "no_price_data"
+
+
+async def test_failsafe_runs_without_price_data(hass: HomeAssistant) -> None:
+    # No sensor.prices, but a failsafe start time is configured => a fixed-time
+    # run is scheduled instead of erroring out.
+    subentry = ConfigSubentryData(
+        subentry_type=SUBENTRY_TYPE_LOAD,
+        title="Heater",
+        unique_id=None,
+        data={
+            "name": "Heater",
+            "mode": "non_sequential",
+            "target_minutes": 60,
+            "failsafe_start": "23:00:00",
+        },
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"name": "Hub", "buy_price_entity": "sensor.prices"},
+        unique_id="sensor.prices",
+        subentries_data=[subentry],
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    subentry_id = next(iter(entry.subentries))
+    sched = hass.states.get(_entity_id(hass, subentry_id, "sensor", "schedule"))
+    assert sched.attributes["status"] == "ok"
+    assert len(sched.attributes["periods"]) == 1

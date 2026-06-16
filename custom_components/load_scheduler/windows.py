@@ -67,3 +67,13 @@ def resolve_window(
         start = now
 
     return (start, end)
+
+
+def next_time(now: datetime, at: time) -> datetime:
+    """Next future occurrence of wall-clock ``at`` (today, else tomorrow)."""
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    candidate = datetime.combine(now.date(), at, tzinfo=now.tzinfo)
+    if candidate <= now:
+        candidate = datetime.combine(now.date() + timedelta(days=1), at, tzinfo=now.tzinfo)
+    return candidate

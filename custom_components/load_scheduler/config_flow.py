@@ -35,6 +35,7 @@ from .const import (
     CONF_DEADLINE,
     CONF_DRAW_KW,
     CONF_EARLIEST,
+    CONF_FAILSAFE_START,
     CONF_FEEDBACK_ENTITY,
     CONF_FEEDBACK_IDLE_W,
     CONF_LIVE_SELL_ENTITY,
@@ -225,6 +226,9 @@ def _load_schema(defaults: dict) -> vol.Schema:
             ): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain=["switch", "input_boolean"])
             ),
+            vol.Optional(
+                CONF_FAILSAFE_START, description=suggest(CONF_FAILSAFE_START)
+            ): selector.TimeSelector(),
             vol.Optional(
                 CONF_ALLOW_SOLAR, default=defaults.get(CONF_ALLOW_SOLAR, True)
             ): selector.BooleanSelector(),

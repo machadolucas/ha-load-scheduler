@@ -17,6 +17,7 @@ from .const import (
     CONF_DEADLINE,
     CONF_DRAW_KW,
     CONF_EARLIEST,
+    CONF_FAILSAFE_START,
     CONF_FEEDBACK_ENTITY,
     CONF_FEEDBACK_IDLE_W,
     CONF_MIN_OFF,
@@ -76,6 +77,7 @@ class LoadConfig:
     temp_min: float
     feedback_entity: str | None
     feedback_idle_w: float
+    failsafe_start: time | None
 
     @classmethod
     def from_subentry(cls, data: Mapping) -> LoadConfig:
@@ -101,6 +103,7 @@ class LoadConfig:
             temp_min=float(data.get(CONF_TEMP_MIN, DEFAULT_TEMP_MIN)),
             feedback_entity=data.get(CONF_FEEDBACK_ENTITY),
             feedback_idle_w=float(data.get(CONF_FEEDBACK_IDLE_W, DEFAULT_FEEDBACK_IDLE_W)),
+            failsafe_start=_parse_time(data.get(CONF_FAILSAFE_START)),
         )
 
     @property

@@ -115,3 +115,13 @@ def test_dst_fall_back_overnight_anchors_and_is_eleven_hours_real():
     assert start == datetime(2026, 10, 24, 21, 0, tzinfo=HEL)
     assert end == datetime(2026, 10, 25, 7, 0, tzinfo=HEL)
     assert _real_elapsed(start, end) == timedelta(hours=11)
+
+
+def test_next_time_today_when_future():
+    now = datetime(2026, 1, 15, 10, 0, tzinfo=EET)
+    assert windows.next_time(now, time(23, 0)) == datetime(2026, 1, 15, 23, 0, tzinfo=EET)
+
+
+def test_next_time_tomorrow_when_past():
+    now = datetime(2026, 1, 15, 10, 0, tzinfo=EET)
+    assert windows.next_time(now, time(8, 0)) == datetime(2026, 1, 16, 8, 0, tzinfo=EET)
