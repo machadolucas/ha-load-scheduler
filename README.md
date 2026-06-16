@@ -87,9 +87,11 @@ start + the upcoming periods), a `number` (target), an `enabled` switch and a
 |---|---|
 | M0 ✅ | Repo scaffold, hub config flow, CI |
 | M1 ✅ | Pure scheduling engine + tests |
-| M2 | One load end-to-end: entities, coordinator, actuation, restart catch-up |
-| M3 | Price-source auto-detection, multi-period, kWh, cap, min-run/off, boost, failsafe, calendar, diagnostics, repairs |
-| M4–M6 | Solar: effective-cost → hub allocation → real-time divert |
+| M2 ✅ | One load end-to-end: entities, coordinator, actuation, restart catch-up, persistence |
+| M3 ✅ | Reconfigure flows, price-source validation, boost, calendar, diagnostics *(kWh, min-run/off, repairs still pending)* |
+| M4 ✅ | Solar-aware effective cost (forecast-only) |
+| M5 | Cross-load solar allocation by priority *(statistics-based baseline pending)* |
+| M6 | Real-time solar divert (supersedes the `Solar - Auto …` automations) |
 | M7 | Bundled dashboard card |
 | M8 | HACS submission polish |
 

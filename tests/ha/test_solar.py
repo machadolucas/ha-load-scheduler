@@ -108,3 +108,64 @@ async def test_allow_solar_false_ignores_excess(hass: HomeAssistant) -> None:
     # With solar valuation off, every slot costs the same (buy); the earliest is
     # chosen and it is grid-sourced.
     assert attrs["periods"][0]["source"] == "grid"
+
+
+async def test_solar_allocation_by_priority(hass: HomeAssistant) -> None:
+    # Two solar loads compete for the same surplus (two slots). The higher
+    # priority load (target 30 min) claims both solar slots; the lower-priority
+    # load then sees no excess and falls back to a grid slot.
+    base = dt_util.now().replace(second=0, microsecond=0)
+    hass.states.async_set("sensor.prices", "ok", _price_attrs(base))
+    hass.states.async_set("sensor.solar", "ok", _solar_attrs(base, {2}))
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            "name": "Hub",
+            "buy_price_entity": "sensor.prices",
+            "solar_forecast_entity": ["sensor.solar"],
+            "consumption_baseline_w": 0,
+        },
+        unique_id="sensor.prices",
+        subentries_data=[
+            ConfigSubentryData(
+                subentry_type=SUBENTRY_TYPE_LOAD,
+                title="High",
+                unique_id=None,
+                data={
+                    "name": "High",
+                    "mode": "non_sequential",
+                    "target_minutes": 30,
+                    "allow_solar": True,
+                    "draw_kw": 5.0,
+                    "priority": 10,
+                },
+            ),
+            ConfigSubentryData(
+                subentry_type=SUBENTRY_TYPE_LOAD,
+                title="Low",
+                unique_id=None,
+                data={
+                    "name": "Low",
+                    "mode": "non_sequential",
+                    "target_minutes": 15,
+                    "allow_solar": True,
+                    "draw_kw": 5.0,
+                    "priority": 1,
+                },
+            ),
+        ],
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    reg = er.async_get(hass)
+    by_title = {sub.title: sid for sid, sub in entry.subentries.items()}
+
+    def source_of(title: str) -> str:
+        sid = by_title[title]
+        sensor_id = reg.async_get_entity_id("sensor", DOMAIN, f"{sid}_schedule")
+        return hass.states.get(sensor_id).attributes["periods"][0]["source"]
+
+    assert source_of("High") == "solar"
+    assert source_of("Low") == "grid"

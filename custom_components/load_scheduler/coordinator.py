@@ -164,7 +164,7 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         self._store.async_schedule_save(self._runtime_snapshot)
         await self.async_request_refresh()
 
-    def _build_slots(self) -> list[engine.Slot]:
+    def _price_slots(self) -> list[engine.Slot]:
         """Normalise the price entity (+ optional sell entity) into UTC slots."""
         buy_state = self.hass.states.get(self._buy_entity)
         forecast = price_source.slots_from_state(buy_state)
@@ -174,16 +174,15 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
                 forecast = price_source.merge_sell(
                     forecast, price_source.slots_from_state(sell_state)
                 )
-        slots = [
+        return [
             engine.Slot(start=fs.start, end=fs.end, buy=fs.buy, sell=fs.sell) for fs in forecast
         ]
-        return self._apply_solar(slots)
 
-    def _apply_solar(self, slots: list[engine.Slot]) -> list[engine.Slot]:
-        """Attach predicted solar excess (kWh) to each slot, when solar is set.
+    def _excess_by_slot(self, slots: list[engine.Slot]) -> dict[datetime, float]:
+        """Predicted solar excess (kWh) per slot start = forecast PV − baseline.
 
-        excess = forecast PV energy in the slot − a flat consumption baseline
-        (M5 replaces the flat baseline with one derived from statistics).
+        The flat baseline is a placeholder; a statistics-derived hour-of-day
+        profile is a planned enhancement.
         """
         forecasts: list[list[solar_source.SolarPeriod]] = []
         for entity_id in self._solar_entities:
@@ -195,48 +194,88 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
             except solar_source.SolarFormatError as err:
                 _LOGGER.warning("Solar source %s unusable: %s", entity_id, err)
         if not forecasts:
-            return slots
-        merged = solar_source.merge_solar(*forecasts)
-        kwh = solar_source.available_kwh_by_slot(merged, slots)
-        return [
-            engine.Slot(
-                start=s.start,
-                end=s.end,
-                buy=s.buy,
-                sell=s.sell,
-                excess_kwh=max(0.0, kwh.get(s.start, 0.0) - self._baseline_kw * (s.minutes / 60.0)),
-            )
+            return {}
+        kwh = solar_source.available_kwh_by_slot(solar_source.merge_solar(*forecasts), slots)
+        return {
+            s.start: max(0.0, kwh.get(s.start, 0.0) - self._baseline_kw * (s.minutes / 60.0))
             for s in slots
-        ]
+        }
+
+    def _solar_enabled(self, cfg: LoadConfig) -> bool:
+        return cfg.allow_solar and bool(self._solar_entities)
+
+    @staticmethod
+    def _consume_excess(
+        residual: dict[datetime, float],
+        base_slots: list[engine.Slot],
+        periods: list[Period],
+        draw_kw: float | None,
+    ) -> None:
+        """Deduct the solar a load uses in its scheduled slots from ``residual``.
+
+        Ensures a lower-priority load can't claim the same kWh a higher-priority
+        one already took. With no known draw, the slot's excess is fully claimed.
+        """
+        for s in base_slots:
+            if residual.get(s.start, 0.0) <= 0:
+                continue
+            if not any(p.start <= s.start < p.end for p in periods):
+                continue
+            if draw_kw is None:
+                used = residual[s.start]
+            else:
+                used = min(residual[s.start], draw_kw * (s.minutes / 60.0))
+            residual[s.start] = max(0.0, residual[s.start] - used)
 
     async def _async_update_data(self) -> dict[str, LoadPlan]:
-        """Recompute every load's plan from the current forecast."""
+        """Recompute every load's plan, allocating solar excess by priority."""
         self._init_runtime()  # pick up newly-added subentries
 
         try:
-            slots = self._build_slots()
+            base_slots = self._price_slots()
         except price_source.PriceFormatError as err:
             _LOGGER.warning("Price source unusable: %s", err)
-            slots = []
+            base_slots = []
 
+        residual = self._excess_by_slot(base_slots) if base_slots else {}
         now = dt_util.now()  # local: windows anchor to wall-clock
         now_utc = dt_util.utcnow()
+
+        # Solar loads first, highest priority first: they claim excess before
+        # lower-priority / non-solar loads, which then see only the residual.
+        def order_key(item):
+            cfg = LoadConfig.from_subentry(item[1].data)
+            return (0 if self._solar_enabled(cfg) else 1, -cfg.priority)
+
         plans: dict[str, LoadPlan] = {}
-        for subentry_id, subentry in self.config_entry.subentries.items():
+        for subentry_id, subentry in sorted(self.config_entry.subentries.items(), key=order_key):
             cfg = LoadConfig.from_subentry(subentry.data)
             rt = self.runtime[subentry_id]
             plan = LoadPlan(target_minutes=rt.target_minutes, enabled=rt.enabled)
             periods: list[Period] = []
+            solar = self._solar_enabled(cfg)
             if rt.enabled:
-                if slots:
+                if base_slots:
+                    slots = [
+                        engine.Slot(
+                            start=s.start,
+                            end=s.end,
+                            buy=s.buy,
+                            sell=s.sell,
+                            excess_kwh=residual.get(s.start, 0.0) if solar else 0.0,
+                        )
+                        for s in base_slots
+                    ]
                     params = build_load_params(
                         cfg,
                         now,
                         rt.target_minutes,
-                        solar_enabled=cfg.allow_solar and bool(self._solar_entities),
+                        solar_enabled=solar,
                         draw_kw=cfg.draw_kw,
                     )
                     periods = engine.compute_plan(slots, params)
+                    if solar:
+                        self._consume_excess(residual, base_slots, periods, cfg.draw_kw)
                 else:
                     plan.error = "no_price_data"
             # A manual boost overrides both the price plan and the enable switch.

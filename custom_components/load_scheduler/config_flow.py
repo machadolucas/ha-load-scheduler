@@ -39,12 +39,14 @@ from .const import (
     CONF_MODE,
     CONF_NAME,
     CONF_PRICE_CAP,
+    CONF_PRIORITY,
     CONF_RUNS_PER_DAY,
     CONF_SELL_PRICE_ENTITY,
     CONF_SOLAR_FORECAST_ENTITY,
     CONF_TARGET_MINUTES,
     DEFAULT_BASELINE_W,
     DEFAULT_NAME,
+    DEFAULT_PRIORITY,
     DEFAULT_RUNS_PER_DAY,
     DEFAULT_TARGET_MINUTES,
     DOMAIN,
@@ -189,6 +191,13 @@ def _load_schema(defaults: dict) -> vol.Schema:
                     step=0.1,
                     unit_of_measurement="kW",
                     mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Optional(
+                CONF_PRIORITY, default=defaults.get(CONF_PRIORITY, DEFAULT_PRIORITY)
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=100, step=1, mode=selector.NumberSelectorMode.BOX
                 )
             ),
         }

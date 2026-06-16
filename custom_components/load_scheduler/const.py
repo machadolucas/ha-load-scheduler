@@ -38,6 +38,8 @@ CONF_MIN_SERVICE = "min_service_minutes"
 CONF_CONTROLLED_ENTITY = "controlled_entity"
 CONF_ALLOW_SOLAR = "allow_solar"
 CONF_DRAW_KW = "draw_kw"
+CONF_PRIORITY = "priority"
+DEFAULT_PRIORITY = 0
 
 # Hub solar settings.
 CONF_CONSUMPTION_BASELINE_W = "consumption_baseline_w"

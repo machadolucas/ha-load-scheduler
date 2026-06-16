@@ -60,7 +60,8 @@
             "price_cap": "Maximum price (optional, €/kWh)",
             "controlled_entity": "Switch to control (optional)",
             "allow_solar": "Value solar excess for this load",
-            "draw_kw": "Load power draw (optional, kW)"
+            "draw_kw": "Load power draw (optional, kW)",
+            "priority": "Solar priority"
           },
           "data_description": {
             "mode": "Non-sequential = the cheapest scattered slots (pausable loads). Sequential = the cheapest contiguous block(s). Informational = compute and display only, never switch anything.",
@@ -70,7 +71,8 @@
             "price_cap": "Discretionary runtime above the minimum is only scheduled at or below this price.",
             "controlled_entity": "A switch / input_boolean the integration turns on and off with the schedule. Leave empty for informational loads.",
             "allow_solar": "When the hub has a solar forecast, value slots with predicted excess at the sell price instead of the buy price.",
-            "draw_kw": "The load's power, used to value how much of a slot's solar excess it can actually absorb. Without it, any excess counts as fully solar."
+            "draw_kw": "The load's power, used to value how much of a slot's solar excess it can actually absorb. Without it, any excess counts as fully solar.",
+            "priority": "When several loads compete for the same solar surplus, higher-priority loads claim it first."
           }
         }
       }

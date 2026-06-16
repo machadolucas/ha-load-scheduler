@@ -22,10 +22,12 @@ from .const import (
     CONF_MODE,
     CONF_NAME,
     CONF_PRICE_CAP,
+    CONF_PRIORITY,
     CONF_RUNS_PER_DAY,
     CONF_TARGET_MINUTES,
     DEFAULT_MIN_SEPARATION,
     DEFAULT_MIN_SERVICE,
+    DEFAULT_PRIORITY,
     DEFAULT_RUNS_PER_DAY,
     DEFAULT_TARGET_MINUTES,
     MODE_NON_SEQUENTIAL,
@@ -59,6 +61,7 @@ class LoadConfig:
     controlled_entity: str | None
     allow_solar: bool
     draw_kw: float | None
+    priority: int
 
     @classmethod
     def from_subentry(cls, data: Mapping) -> LoadConfig:
@@ -77,6 +80,7 @@ class LoadConfig:
             controlled_entity=data.get(CONF_CONTROLLED_ENTITY),
             allow_solar=bool(data.get(CONF_ALLOW_SOLAR, True)),
             draw_kw=(float(data[CONF_DRAW_KW]) if data.get(CONF_DRAW_KW) is not None else None),
+            priority=int(data.get(CONF_PRIORITY, DEFAULT_PRIORITY)),
         )
 
     @property
