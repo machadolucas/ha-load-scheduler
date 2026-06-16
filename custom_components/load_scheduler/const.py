@@ -38,6 +38,7 @@ TARGET_TYPE_KWH = "kwh"  # the target is energy to deliver (kWh) at draw_kw
 DEFAULT_TARGET_TYPE = TARGET_TYPE_RUNTIME
 CONF_EARLIEST = "earliest"
 CONF_DEADLINE = "deadline"
+CONF_HORIZON_HOURS = "horizon_hours"  # multi-day: search the next N hours instead
 CONF_RUNS_PER_DAY = "runs_per_day"
 CONF_MIN_SEPARATION = "min_separation_minutes"
 CONF_MIN_RUN = "min_run_minutes"

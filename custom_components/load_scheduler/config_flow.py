@@ -36,6 +36,7 @@ from .const import (
     CONF_FAILSAFE_START,
     CONF_FEEDBACK_ENTITY,
     CONF_FEEDBACK_IDLE_W,
+    CONF_HORIZON_HOURS,
     CONF_LIVE_SELL_ENTITY,
     CONF_MIN_OFF,
     CONF_MIN_RUN,
@@ -206,6 +207,17 @@ def _load_schema(defaults: dict) -> vol.Schema:
             vol.Optional(
                 CONF_DEADLINE, description=suggest(CONF_DEADLINE)
             ): selector.TimeSelector(),
+            vol.Optional(
+                CONF_HORIZON_HOURS, description=suggest(CONF_HORIZON_HOURS)
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0,
+                    max=72,
+                    step=1,
+                    unit_of_measurement="h",
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
             vol.Required(
                 CONF_RUNS_PER_DAY,
                 default=defaults.get(CONF_RUNS_PER_DAY, DEFAULT_RUNS_PER_DAY),

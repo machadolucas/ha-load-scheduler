@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 from .const import (
     CONF_ALLOW_SOLAR,
@@ -21,6 +21,7 @@ from .const import (
     CONF_FAILSAFE_START,
     CONF_FEEDBACK_ENTITY,
     CONF_FEEDBACK_IDLE_W,
+    CONF_HORIZON_HOURS,
     CONF_MIN_OFF,
     CONF_MIN_RUN,
     CONF_MIN_SEPARATION,
@@ -66,6 +67,7 @@ class LoadConfig:
     target_minutes: float
     earliest: time | None
     deadline: time | None
+    horizon_hours: float | None
     runs_per_day: int
     min_separation_minutes: float
     min_run_minutes: float
@@ -94,6 +96,9 @@ class LoadConfig:
             target_minutes=float(data.get(CONF_TARGET_MINUTES, DEFAULT_TARGET_MINUTES)),
             earliest=_parse_time(data.get(CONF_EARLIEST)),
             deadline=_parse_time(data.get(CONF_DEADLINE)),
+            horizon_hours=(
+                float(data[CONF_HORIZON_HOURS]) if data.get(CONF_HORIZON_HOURS) else None
+            ),
             runs_per_day=int(data.get(CONF_RUNS_PER_DAY, DEFAULT_RUNS_PER_DAY)),
             min_separation_minutes=float(data.get(CONF_MIN_SEPARATION, DEFAULT_MIN_SEPARATION)),
             min_run_minutes=float(data.get(CONF_MIN_RUN, 0)),
@@ -135,7 +140,12 @@ def build_load_params(
     both the target and the minimum-service floor (dynamic remaining), so a load
     that already ran enough (e.g. on solar) shrinks or skips its planned run.
     """
-    window = resolve_window(now, cfg.earliest, cfg.deadline)
+    if cfg.horizon_hours:
+        # Multi-day: search the next N hours so the engine can defer an expensive
+        # today to a cheaper tomorrow (once tomorrow's real prices are known).
+        window = (now, now + timedelta(hours=cfg.horizon_hours))
+    else:
+        window = resolve_window(now, cfg.earliest, cfg.deadline)
     return LoadParams(
         mode=cfg.mode,
         target_minutes=max(0.0, target_minutes - delivered_minutes),

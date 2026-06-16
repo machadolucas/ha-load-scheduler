@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta
 
 from custom_components.load_scheduler.engine import ScheduleMode
 from custom_components.load_scheduler.models import LoadConfig, build_load_params
@@ -70,3 +70,15 @@ def test_build_load_params_delivered_clamps_at_zero():
     params = build_load_params(cfg, now, target_minutes=60, delivered_minutes=100)
     assert params.target_minutes == 0
     assert params.min_service_minutes == 0
+
+
+def test_horizon_window_overrides_daily_window():
+    # With a multi-day horizon the window is now → now + N hours (so the engine
+    # can defer to a cheaper next day), ignoring earliest/deadline.
+    cfg = LoadConfig.from_subentry(
+        {"name": "X", "earliest": "21:00:00", "deadline": "07:00:00", "horizon_hours": 48}
+    )
+    now = datetime(2026, 1, 15, 20, 0, tzinfo=UTC)
+    start, end = build_load_params(cfg, now, target_minutes=60).window
+    assert start == now
+    assert end == now + timedelta(hours=48)
