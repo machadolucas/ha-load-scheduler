@@ -1,8 +1,9 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# NOTE: asyncio_mode + Home Assistant test fixtures (pytest-homeassistant-custom-
-# component) are enabled from M2, when the first HA-side tests land. Until then
-# the pure-engine tests run with nothing but pytest installed.
+asyncio_mode = "auto"
+# Pure tests (test_engine/price_source/windows) load their module via importlib
+# and need only pytest. The HA-side tests under tests/ha/ use
+# pytest-homeassistant-custom-component (Python 3.13 — HA does not support 3.14).
 
 [tool.ruff]
 target-version = "py313"

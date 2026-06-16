@@ -20,5 +20,70 @@
     "abort": {
       "already_configured": "This price sensor is already configured."
     }
+  },
+  "config_subentries": {
+    "load": {
+      "initiate_flow": {
+        "user": "Add load"
+      },
+      "entry_type": "Load",
+      "step": {
+        "user": {
+          "title": "Add a load",
+          "description": "Configure how this load is scheduled into cheap hours. Leave the window empty to search the next 24 hours; set an earliest start and a deadline (e.g. 21:00 → 07:00) to constrain it.",
+          "data": {
+            "name": "Name",
+            "mode": "Scheduling mode",
+            "target_minutes": "Target runtime",
+            "earliest": "Earliest start (optional)",
+            "deadline": "Deadline (optional)",
+            "runs_per_day": "Runs per day (sequential)",
+            "min_separation_minutes": "Minimum separation between runs (optional)",
+            "min_service_minutes": "Minimum service per day (optional)",
+            "price_cap": "Maximum price (optional, €/kWh)",
+            "controlled_entity": "Switch to control (optional)"
+          },
+          "data_description": {
+            "mode": "Non-sequential = the cheapest scattered slots (pausable loads). Sequential = the cheapest contiguous block(s). Informational = compute and display only, never switch anything.",
+            "target_minutes": "How long the load should run, in minutes.",
+            "runs_per_day": "For sequential loads, how many separate blocks to schedule (e.g. run a washing machine twice).",
+            "min_service_minutes": "A guaranteed minimum that runs even when prices are above the cap, so the load never starves.",
+            "price_cap": "Discretionary runtime above the minimum is only scheduled at or below this price.",
+            "controlled_entity": "A switch / input_boolean the integration turns on and off with the schedule. Leave empty for informational loads."
+          }
+        }
+      }
+    }
+  },
+  "selector": {
+    "mode": {
+      "options": {
+        "non_sequential": "Non-sequential (scattered, pausable)",
+        "sequential": "Sequential (contiguous block)",
+        "informational": "Informational (display only)"
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "running": {
+        "name": "Running"
+      }
+    },
+    "sensor": {
+      "schedule": {
+        "name": "Schedule"
+      }
+    },
+    "number": {
+      "target": {
+        "name": "Target runtime"
+      }
+    },
+    "switch": {
+      "enabled": {
+        "name": "Enabled"
+      }
+    }
   }
 }

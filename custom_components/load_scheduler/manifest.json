@@ -3,7 +3,7 @@
   "name": "Load Scheduler",
   "codeowners": ["@machadolucas"],
   "config_flow": true,
-  "dependencies": ["http", "frontend", "recorder"],
+  "dependencies": [],
   "documentation": "https://github.com/machadolucas/ha-load-scheduler",
   "integration_type": "hub",
   "iot_class": "calculated",
