@@ -34,9 +34,12 @@ exposes simple knobs.
     support for **multiple non-colliding runs per day** (e.g. a washing machine
     twice) and a minimum separation between them.
 - **Runtime *or* energy targets** — schedule by minutes of run time, or by kWh
-  to deliver at the load's power draw (EV charging). An optional "delivered
-  today" sensor shrinks the remaining target (dynamic remaining), so a load that
-  already ran enough — e.g. on solar — is scheduled for less or skipped.
+  to deliver at the load's power draw (EV charging). **Dynamic remaining** shrinks
+  the remaining target by how much the load already ran today — measured
+  automatically from the feedback element since local midnight (no extra sensor),
+  or from an explicit "delivered today" sensor if you prefer. So a load that
+  already ran enough — e.g. on solar, or via a manual/comfort run — is scheduled
+  for less or skipped.
 - **Informational mode** — compute and display the cheapest time without
   actuating anything (e.g. a non-connected dishwasher you start by hand).
 - **Solar arbitration** — value each slot at its *effective cost*: the buy price

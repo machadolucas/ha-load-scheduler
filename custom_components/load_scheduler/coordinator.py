@@ -50,6 +50,39 @@ from .models import LoadConfig, build_load_params
 from .persistence import RuntimeStore
 from .windows import next_time
 
+# How often the recorder-backed "delivered today" measurement is recomputed.
+DELIVERED_REFRESH_S = 120
+
+
+def _state_on(value: str, threshold: float | None) -> bool:
+    """Whether a recorded state counts as 'delivering'.
+
+    With a power threshold (a numeric feedback sensor) the element is delivering
+    at or above it; otherwise an on/off entity simply has to be ``on``.
+    """
+    if threshold is not None:
+        try:
+            return float(value) >= threshold
+        except (TypeError, ValueError):
+            return False
+    return str(value).lower() == "on"
+
+
+def _on_minutes(states, start: datetime, end: datetime, threshold: float | None) -> float:
+    """Minutes a recorded entity spent 'delivering' within ``[start, end]``."""
+    on_seconds = 0.0
+    n = len(states)
+    for i, st in enumerate(states):
+        seg_start = max(st.last_changed, start)
+        seg_end = states[i + 1].last_changed if i + 1 < n else end
+        seg_end = min(seg_end, end)
+        if seg_end <= seg_start:
+            continue
+        if _state_on(st.state, threshold):
+            on_seconds += (seg_end - seg_start).total_seconds()
+    return on_seconds / 60.0
+
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -106,6 +139,11 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         self._baseline_entity: str | None = entry.data.get(CONF_BASELINE_ENTITY)
         # hour-of-day → kW, built from statistics; None until/unless available.
         self._baseline_profile: dict[int, float] | None = None
+        # Auto-measured "delivered today" (minutes), keyed by subentry_id, from
+        # the recorder; refreshed on a throttle. Used when a load has no explicit
+        # delivered_entity but does have a feedback/controlled entity to measure.
+        self._delivered_today: dict[str, float] = {}
+        self._delivered_at: datetime | None = None
         # Predictor price forecast for slots beyond the real horizon.
         self._forecast_entity: str | None = entry.data.get(CONF_FORECAST_PRICE_ENTITY)
         self._forecast_margin: float = float(
@@ -342,17 +380,75 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         if profile := baseline_mod.build_hourly_profile(samples):
             self._baseline_profile = profile
 
+    async def _maybe_refresh_delivered(self, now_utc: datetime) -> None:
+        """Refresh auto-measured delivered-today, throttled to ~2 min."""
+        if (
+            self._delivered_at is None
+            or (now_utc - self._delivered_at).total_seconds() >= DELIVERED_REFRESH_S
+        ):
+            await self.async_refresh_delivered()
+
+    async def async_refresh_delivered(self) -> None:
+        """Measure today's on-time for loads without an explicit delivered sensor.
+
+        For each such load, the on-time of its feedback element (or, lacking one,
+        its controlled entity) since local midnight is read from the recorder.
+        This makes dynamic-remaining work with no extra sensor, counts heating no
+        matter who started it (manual / comfort automation / the scheduler), and
+        resets at midnight because the query window restarts each day.
+        Best-effort: silently no-ops if the recorder is unavailable.
+        """
+        targets: list[tuple[str, str, float | None]] = []
+        for subentry_id, subentry in self.config_entry.subentries.items():
+            cfg = LoadConfig.from_subentry(subentry.data)
+            if cfg.delivered_entity or cfg.is_informational:
+                continue
+            if cfg.feedback_entity:
+                targets.append((subentry_id, cfg.feedback_entity, cfg.feedback_idle_w))
+            elif cfg.controlled_entity:
+                targets.append((subentry_id, cfg.controlled_entity, None))
+        if not targets:
+            return
+        try:
+            from homeassistant.components.recorder import get_instance
+            from homeassistant.components.recorder.history import (
+                state_changes_during_period,
+            )
+        except ImportError:
+            return
+        start = dt_util.as_utc(dt_util.start_of_local_day())
+        end = dt_util.utcnow()
+
+        def _measure() -> dict[str, float]:
+            out: dict[str, float] = {}
+            for subentry_id, entity_id, threshold in targets:
+                changes = state_changes_during_period(
+                    self.hass, start, end, entity_id, include_start_time_state=True
+                )
+                out[subentry_id] = _on_minutes(changes.get(entity_id, []), start, end, threshold)
+            return out
+
+        try:
+            self._delivered_today = await get_instance(self.hass).async_add_executor_job(_measure)
+            self._delivered_at = end
+        except Exception as err:  # noqa: BLE001 - recorder may be unavailable
+            _LOGGER.debug("Delivered-today measurement unavailable: %s", err)
+
     def _solar_enabled(self, cfg: LoadConfig) -> bool:
         return cfg.allow_solar and bool(self._solar_entities)
 
-    def _delivered_minutes(self, cfg: LoadConfig) -> float:
-        """Runtime already delivered today (minutes) from the delivered sensor.
+    def _delivered_minutes(self, cfg: LoadConfig, subentry_id: str) -> float:
+        """Runtime already delivered today (minutes).
 
-        Interprets the sensor's unit (h/min/s, or kWh/Wh via ``draw_kw``) so a
-        load that already ran enough this period shrinks/skips its planned run.
+        With an explicit ``delivered_entity`` the sensor's unit is interpreted
+        (h/min/s, or kWh/Wh via ``draw_kw``). Otherwise the integration measures
+        it itself — the on-time of the feedback element (or the controlled entity)
+        since local midnight, from the recorder (see ``_measure_delivered``) — so
+        no extra sensor is needed. Either way, a load that already ran enough this
+        period shrinks/skips its planned run.
         """
         if not cfg.delivered_entity:
-            return 0.0
+            return self._delivered_today.get(subentry_id, 0.0)
         state = self.hass.states.get(cfg.delivered_entity)
         if state is None:
             return 0.0
@@ -418,6 +514,7 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         residual = self._excess_by_slot(base_slots) if base_slots else {}
         now = dt_util.now()  # local: windows anchor to wall-clock
         now_utc = dt_util.utcnow()
+        await self._maybe_refresh_delivered(now_utc)
 
         # Solar loads first, highest priority first: they claim excess before
         # lower-priority / non-solar loads, which then see only the residual.
@@ -448,7 +545,7 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
                         cfg,
                         now,
                         rt.target_minutes,
-                        delivered_minutes=self._delivered_minutes(cfg),
+                        delivered_minutes=self._delivered_minutes(cfg, subentry_id),
                         solar_enabled=solar,
                         draw_kw=cfg.draw_kw,
                     )

@@ -69,6 +69,11 @@ solar entity ─┘ solar_source + baseline → excess ───┤
   plan, so an override shows the truth.
 - **Solar excess** = forecast PV − baseline; allocated to loads highest-priority
   first against a shared residual so no kWh is double-counted.
+- **Delivered today** (dynamic remaining) — subtracted from the target and the
+  min-service floor. With no `delivered_entity` the coordinator measures it from
+  the recorder: the feedback element's (or controlled entity's) on-time since
+  local midnight (`async_refresh_delivered`, throttled ~2 min). It counts heating
+  regardless of who started it and resets daily, so no external sensor is needed.
 - **Multi-day horizon** — a load with `horizon_hours` searches `now → now+N h`
   instead of a daily window, so the engine can defer an expensive day to a
   cheaper next one. The coordinator's `_price_slots` appends an optional
