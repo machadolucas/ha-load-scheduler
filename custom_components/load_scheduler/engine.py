@@ -332,3 +332,26 @@ def compute_plan(slots: list[Slot], params: LoadParams) -> list[Period]:
     if params.mode is ScheduleMode.NON_SEQUENTIAL:
         return plan_non_sequential(slots, params)
     return plan_sequential(slots, params)
+
+
+def merge_periods(periods: list[Period]) -> list[Period]:
+    """Merge overlapping/adjacent periods (by time) into a minimal set.
+
+    Used to fold a manual boost interval into the computed plan. ``avg_cost`` is
+    a minutes-weighted blend of the merged inputs (good enough for display).
+    """
+    if not periods:
+        return []
+    ordered = sorted(periods, key=lambda p: p.start)
+    merged = [Period(ordered[0].start, ordered[0].end, ordered[0].source, ordered[0].avg_cost)]
+    for p in ordered[1:]:
+        last = merged[-1]
+        if p.start <= last.end:
+            w_last, w_p = last.minutes, p.minutes
+            total = w_last + w_p
+            last.avg_cost = (last.avg_cost * w_last + p.avg_cost * w_p) / total if total else 0.0
+            last.source = last.source if last.source == p.source else RunSource.MIXED
+            last.end = max(last.end, p.end)
+        else:
+            merged.append(Period(p.start, p.end, p.source, p.avg_cost))
+    return merged

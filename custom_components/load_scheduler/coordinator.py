@@ -29,7 +29,7 @@ from .const import (
     DOMAIN,
     UPDATE_INTERVAL_MINUTES,
 )
-from .engine import Period
+from .engine import Period, RunSource
 from .models import LoadConfig, build_load_params
 from .persistence import RuntimeStore
 
@@ -40,12 +40,13 @@ _LOGGER = logging.getLogger(__name__)
 class LoadRuntime:
     """Mutable, user-adjustable state for one load (source of truth in memory).
 
-    Persisted to ``Store`` in M2b; for now initialised from the subentry config
-    and updated by the load's ``number`` / ``switch`` entities.
+    Persisted to the Store and restored at setup; updated by the load's number /
+    switch / boost-button entities.
     """
 
     target_minutes: float
     enabled: bool = True
+    boost_until: datetime | None = None
 
 
 @dataclass
@@ -98,14 +99,20 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         for subentry_id, subentry in self.config_entry.subentries.items():
             cfg = LoadConfig.from_subentry(subentry.data)
             saved = data.get(subentry_id, {})
+            boost_raw = saved.get("boost_until")
             self.runtime[subentry_id] = LoadRuntime(
                 target_minutes=saved.get("target_minutes", cfg.target_minutes),
                 enabled=saved.get("enabled", True),
+                boost_until=dt_util.parse_datetime(boost_raw) if boost_raw else None,
             )
 
     def _runtime_snapshot(self) -> dict:
         return {
-            sid: {"target_minutes": rt.target_minutes, "enabled": rt.enabled}
+            sid: {
+                "target_minutes": rt.target_minutes,
+                "enabled": rt.enabled,
+                "boost_until": rt.boost_until.isoformat() if rt.boost_until else None,
+            }
             for sid, rt in self.runtime.items()
         }
 
@@ -141,6 +148,12 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         self._store.async_schedule_save(self._runtime_snapshot)
         await self.async_request_refresh()
 
+    async def async_boost(self, subentry_id: str, minutes: float) -> None:
+        """Force a load to run now for ``minutes`` (overrides price + enable)."""
+        self.runtime[subentry_id].boost_until = dt_util.utcnow() + timedelta(minutes=minutes)
+        self._store.async_schedule_save(self._runtime_snapshot)
+        await self.async_request_refresh()
+
     def _build_slots(self) -> list[engine.Slot]:
         """Normalise the price entity (+ optional sell entity) into UTC slots."""
         buy_state = self.hass.states.get(self._buy_entity)
@@ -166,20 +179,25 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
             slots = []
 
         now = dt_util.now()  # local: windows anchor to wall-clock
+        now_utc = dt_util.utcnow()
         plans: dict[str, LoadPlan] = {}
         for subentry_id, subentry in self.config_entry.subentries.items():
             cfg = LoadConfig.from_subentry(subentry.data)
             rt = self.runtime[subentry_id]
             plan = LoadPlan(target_minutes=rt.target_minutes, enabled=rt.enabled)
-            if not rt.enabled:
-                plans[subentry_id] = plan
-                continue
-            if not slots:
-                plan.error = "no_price_data"
-                plans[subentry_id] = plan
-                continue
-            params = build_load_params(cfg, now, rt.target_minutes)
-            plan.periods = engine.compute_plan(slots, params)
+            periods: list[Period] = []
+            if rt.enabled:
+                if slots:
+                    params = build_load_params(cfg, now, rt.target_minutes)
+                    periods = engine.compute_plan(slots, params)
+                else:
+                    plan.error = "no_price_data"
+            # A manual boost overrides both the price plan and the enable switch.
+            if rt.boost_until and now_utc < rt.boost_until:
+                boost = Period(now_utc, rt.boost_until, RunSource.GRID, 0.0)
+                periods = engine.merge_periods([*periods, boost])
+                plan.error = None
+            plan.periods = periods
             plans[subentry_id] = plan
         return plans
 

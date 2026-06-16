@@ -12,6 +12,8 @@ PLATFORMS: list[Platform] = [
     Platform.SENSOR,
     Platform.NUMBER,
     Platform.SWITCH,
+    Platform.BUTTON,
+    Platform.CALENDAR,
 ]
 
 # ── Hub config-entry keys ────────────────────────────────────────────────────
@@ -45,6 +47,7 @@ DEFAULT_TARGET_MINUTES = 180  # 3 h
 DEFAULT_RUNS_PER_DAY = 1
 DEFAULT_MIN_SEPARATION = 0
 DEFAULT_MIN_SERVICE = 0
+DEFAULT_BOOST_MINUTES = 60  # used by the boost button when target is 0
 
 # Bounds for the target `number` entity (minutes).
 TARGET_MIN = 0
