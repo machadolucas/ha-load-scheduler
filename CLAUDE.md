@@ -103,3 +103,23 @@ uv pip install --python .venv313/bin/python -r requirements_test.txt ruff
   fixture source).
 - Don't commit secrets; config lives in the config entry and runtime state in
   `.storage/` (both in HA backups).
+
+## Branding / icon
+
+`brands/` holds the icon: `icon.svg` (editable source) + `icon.png` (256) +
+`icon@2x.png` (512), rendered with `rsvg-convert`. Full-bleed app tile: blue
+energy gradient, white price bars with the cheapest in green, and an amber
+lightning bolt ("run the load on the cheap slot"). The sibling `load_need_predictor`
+integration's icon is derived from this one (bolt → forecast line). Re-render
+after editing the SVG:
+
+```bash
+cd brands && rsvg-convert -w 512 -h 512 icon.svg -o icon@2x.png \
+                        && rsvg-convert -w 256 -h 256 icon.svg -o icon.png
+```
+
+**TODO — make it show in HA + HACS (not done yet):** HA/HACS load integration
+icons only from the `home-assistant/brands` repo (no repo-local or manifest
+override). Open a PR there adding `custom_integrations/load_scheduler/icon.png`
++ `icon@2x.png` (the files in `brands/`). Keep it full-bleed so brands' trim
+check passes. After merge, an HA restart may be needed to clear the brand cache.
