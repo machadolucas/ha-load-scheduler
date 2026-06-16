@@ -44,6 +44,10 @@ class LoadBoostButton(LoadSchedulerEntity, ButtonEntity):
     async def async_press(self) -> None:
         rt = self.coordinator.runtime[self._subentry_id]
         if rt.boost_until is not None and dt_util.utcnow() < rt.boost_until:
+            # Cancelling a boost is an explicit "stop now": back off first so the
+            # divert/plan don't re-grab the load on the next tick, then clear it.
+            if self.coordinator.actuator is not None:
+                self.coordinator.actuator.note_manual_stop(self._subentry_id)
             await self.coordinator.async_cancel_boost(self._subentry_id)
             return
         minutes = rt.target_minutes if rt.target_minutes > 0 else DEFAULT_BOOST_MINUTES

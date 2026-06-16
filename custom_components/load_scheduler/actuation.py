@@ -276,6 +276,19 @@ class LoadActuator:
         until = self._override_until.get(sid)
         return until is not None and dt_util.utcnow() < until
 
+    @callback
+    def note_manual_stop(self, sid: str) -> None:
+        """Back off after an explicit user stop (e.g. cancelling a boost).
+
+        Sets the same grace as a manual off and drops the load from the driven /
+        diverted sets, so the real-time divert or the plan don't immediately
+        re-grab a load the user just stopped (notably on a solar-exporting summer
+        night). After the grace, normal scheduling/divert resumes.
+        """
+        self._override_until[sid] = dt_util.utcnow() + timedelta(seconds=MANUAL_OVERRIDE_GRACE_S)
+        self._driven.discard(sid)
+        self._diverted.discard(sid)
+
     def _desired_on(self, sid: str, cfg: LoadConfig) -> bool | None:
         """Resolve the desired controlled-entity state, or None to not touch."""
         if self._override_active(sid):

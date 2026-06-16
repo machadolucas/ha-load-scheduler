@@ -53,6 +53,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LoadSchedulerConfigEntry
 
     # Actuation: drive controlled entities + reconcile on startup (catch-up).
     actuator = LoadActuator(hass, coordinator)
+    coordinator.actuator = actuator  # let entities signal an explicit stop
     await actuator.async_start()
     entry.async_on_unload(actuator.async_shutdown)
     entry.async_on_unload(coordinator.async_add_listener(actuator.async_handle_update))

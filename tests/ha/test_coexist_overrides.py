@@ -112,6 +112,41 @@ async def test_boost_button_toggles_on_and_off(hass: HomeAssistant) -> None:
     assert coordinator.runtime[subentry_id].boost_until is None
 
 
+async def test_boost_cancel_backs_off_so_divert_cannot_regrab(hass: HomeAssistant) -> None:
+    # Cancelling a boost is an explicit stop. It must leave the load ineligible
+    # for an immediate re-grab by the plan or the real-time divert (the summer
+    # white-night solar-export case), not just clear the boost.
+    async_mock_service(hass, "homeassistant", "turn_on")
+    async_mock_service(hass, "homeassistant", "turn_off")
+    entry = await _setup(
+        hass,
+        {
+            "name": "Floor",
+            "mode": "non_sequential",
+            "target_minutes": 30,
+            "controlled_entity": "input_boolean.floor",
+            "allow_solar": True,
+        },
+        cheap=(20, 21),
+        controlled_state="off",
+    )
+    subentry_id = next(iter(entry.subentries))
+    coordinator = entry.runtime_data
+    button_id = er.async_get(hass).async_get_entity_id("button", DOMAIN, f"{subentry_id}_boost")
+
+    await hass.services.async_call("button", "press", {"entity_id": button_id}, blocking=True)
+    await hass.async_block_till_done()
+    await hass.services.async_call("button", "press", {"entity_id": button_id}, blocking=True)
+    await hass.async_block_till_done()
+
+    assert coordinator.runtime[subentry_id].boost_until is None
+    actuator = coordinator.actuator
+    cfg = coordinator.load_config(subentry_id)
+    assert actuator._override_active(subentry_id) is True
+    assert actuator._desired_on(subentry_id, cfg) is None  # don't touch
+    assert actuator._eligible_for_divert(subentry_id, cfg) is False
+
+
 async def test_running_sensor_reflects_controlled_entity(hass: HomeAssistant) -> None:
     # No scheduled period now, but a manual on of the contactor must show as
     # "running" (the sensor reflects reality, not the plan).

@@ -153,6 +153,8 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         self.runtime: dict[str, LoadRuntime] = {}
         self._store = RuntimeStore(hass, entry.entry_id)
         self._init_runtime()
+        # Set by __init__.py once the actuator is built (for stop-backoff wiring).
+        self.actuator = None
 
     def _init_runtime(self) -> None:
         """Seed runtime state from each load subentry's stored config."""
