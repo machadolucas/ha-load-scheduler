@@ -7,17 +7,23 @@ so after a restart you can add it to any dashboard.
 It is intentionally tiny — one row per load:
 
 ```
-● Water heater   tonight 02:15   2h45   5.2c   ☀
-  Dishwasher     tomorrow 13:00  3h     6.1c   ⚡
+🟠 Water heater   now    1h      ☀   ›
+🟡 Dishwasher     in 5h  3h      ⚡  ›
+⚪ Floor (shower) in 2h  9h59    ☀  ›
 ```
 
-- the dot is filled while the load is **running**;
-- the time is the **next run** (or `now → …` while running);
-- duration is rendered mixed (`2h45`);
-- the price is the average effective price for the plan;
-- the badge shows whether the run is **solar** (☀), **grid** (⚡) or mixed.
+- the **dot** reflects the load's actual state: **orange** = heating (the element
+  is drawing power), **light yellow** = powered but idle (on, element satisfied),
+  **grey** = off;
+- the time is **`now`** when the scheduled run is current, otherwise **`in 5h`** —
+  the relative countdown to the next run (handy for manually-started loads like a
+  dishwasher), or `idle` when nothing is scheduled;
+- duration is the total scheduled run time, rendered mixed (`2h45`);
+- the badge shows whether the run is **solar** (☀), **grid** (⚡) or mixed (☀⚡);
+- the **›** chevron marks the row as expandable.
 
-Tap a row to expand its individual upcoming periods.
+Tap a row to expand its individual upcoming periods (with their clock times,
+price and source).
 
 ## Usage
 
