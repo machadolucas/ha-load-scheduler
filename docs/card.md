@@ -39,6 +39,14 @@ entities:
 
 `entities` are the per-load **`…_schedule`** sensors (one per load device).
 
+## Sizing
+
+In a **Sections** dashboard the card is resizable: it declares grid options
+(`getGridOptions`) so you can drag it **narrower than the full section width**
+(down to a quarter) and its height auto-fits the number of loads. The rows are
+responsive — the load name ellipsises and the columns stay aligned at small
+widths.
+
 ## Run history
 
 The bespoke history view is a planned addition. In the meantime, Home

@@ -66,6 +66,11 @@ class LoadSchedulerCard extends HTMLElement {
     return 1 + (this._config?.entities?.length || 1);
   }
 
+  // Sections (grid) view: resizable, and narrower than a full section if wanted.
+  getGridOptions() {
+    return { columns: 12, min_columns: 3, rows: "auto" };
+  }
+
   _row(entityId) {
     const st = this._hass.states[entityId];
     if (!st) return `<div class="row missing">${entityId} (unavailable)</div>`;
@@ -135,8 +140,8 @@ class LoadSchedulerCard extends HTMLElement {
         .title { font-weight: 600; padding: 8px 12px 2px; }
         .row { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px;
                padding: 3px 12px; cursor: pointer; font-size: 0.95em; line-height: 1.25; }
-        .row .name { flex: 1 1 auto; font-weight: 500; white-space: nowrap;
-               overflow: hidden; text-overflow: ellipsis; }
+        .row .name { flex: 1 1 auto; min-width: 0; font-weight: 500;
+               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .row .when { color: var(--secondary-text-color); white-space: nowrap; }
         .row .dur { color: var(--secondary-text-color); white-space: nowrap;
                font-variant-numeric: tabular-nums; min-width: 2.5em; text-align: right; }
