@@ -35,9 +35,12 @@ from .const import (
     CONF_BASELINE_ENTITY,
     CONF_BUY_PRICE_ENTITY,
     CONF_CONSUMPTION_BASELINE_W,
+    CONF_FORECAST_PRICE_ENTITY,
+    CONF_FORECAST_PRICE_MARGIN,
     CONF_SELL_PRICE_ENTITY,
     CONF_SOLAR_FORECAST_ENTITY,
     DEFAULT_BASELINE_W,
+    DEFAULT_FORECAST_PRICE_MARGIN,
     DOMAIN,
     ISSUE_PRICE_UNAVAILABLE,
     UPDATE_INTERVAL_MINUTES,
@@ -103,6 +106,11 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         self._baseline_entity: str | None = entry.data.get(CONF_BASELINE_ENTITY)
         # hour-of-day → kW, built from statistics; None until/unless available.
         self._baseline_profile: dict[int, float] | None = None
+        # Predictor price forecast for slots beyond the real horizon.
+        self._forecast_entity: str | None = entry.data.get(CONF_FORECAST_PRICE_ENTITY)
+        self._forecast_margin: float = float(
+            entry.data.get(CONF_FORECAST_PRICE_MARGIN, DEFAULT_FORECAST_PRICE_MARGIN)
+        )
         # Per-load runtime state, keyed by subentry_id.
         self.runtime: dict[str, LoadRuntime] = {}
         self._store = RuntimeStore(hass, entry.entry_id)
@@ -164,6 +172,8 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         watched = [self._buy_entity]
         if self._sell_entity:
             watched.append(self._sell_entity)
+        if self._forecast_entity:
+            watched.append(self._forecast_entity)
         watched.extend(self._solar_entities)
         self.config_entry.async_on_unload(
             async_track_state_change_event(self.hass, watched, self._handle_source_change)
@@ -204,17 +214,50 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         await self.async_request_refresh()
 
     def _price_slots(self) -> list[engine.Slot]:
-        """Normalise the price entity (+ optional sell entity) into UTC slots."""
+        """Real price slots, optionally extended with the predictor's forecast.
+
+        The optional forecast entity supplies slots *beyond* the real day-ahead
+        horizon (e.g. a wind/temperature/solar-based estimate of the following
+        day), with a confidence margin added to its buy price so the engine only
+        defers to a forecast window when it is cheaper than the known prices by
+        more than that margin. This is what lets a load bet "skip the next 24 h,
+        the following 24 h will be cheaper" using 72 h weather forecasts.
+        """
         buy_state = self.hass.states.get(self._buy_entity)
-        forecast = price_source.slots_from_state(buy_state)
+        real = price_source.slots_from_state(buy_state)
         if self._sell_entity:
             sell_state = self.hass.states.get(self._sell_entity)
             if sell_state is not None:
-                forecast = price_source.merge_sell(
-                    forecast, price_source.slots_from_state(sell_state)
-                )
+                real = price_source.merge_sell(real, price_source.slots_from_state(sell_state))
+        combined = list(real) + self._forecast_slots(real)
         return [
-            engine.Slot(start=fs.start, end=fs.end, buy=fs.buy, sell=fs.sell) for fs in forecast
+            engine.Slot(start=fs.start, end=fs.end, buy=fs.buy, sell=fs.sell) for fs in combined
+        ]
+
+    def _forecast_slots(
+        self, real: list[price_source.ForecastSlot]
+    ) -> list[price_source.ForecastSlot]:
+        """Predictor forecast slots beyond the real-price horizon (+ margin)."""
+        if not self._forecast_entity:
+            return []
+        state = self.hass.states.get(self._forecast_entity)
+        if state is None:
+            return []
+        try:
+            forecast = price_source.slots_from_state(state)
+        except price_source.PriceFormatError as err:
+            _LOGGER.warning("Forecast price source unusable: %s", err)
+            return []
+        last_real = max((s.start for s in real), default=None)
+        return [
+            price_source.ForecastSlot(
+                start=f.start,
+                end=f.end,
+                buy=f.buy + self._forecast_margin,
+                sell=f.sell,
+            )
+            for f in forecast
+            if last_real is None or f.start > last_real
         ]
 
     def _excess_by_slot(self, slots: list[engine.Slot]) -> dict[datetime, float]:

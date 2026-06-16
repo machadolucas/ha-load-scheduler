@@ -60,6 +60,13 @@ solar entity ─┘ solar_source + baseline → excess ───┤
   scheduled plan (incl. boost / min-service) → real-time divert → off.
 - **Solar excess** = forecast PV − baseline; allocated to loads highest-priority
   first against a shared residual so no kWh is double-counted.
+- **Multi-day horizon** — a load with `horizon_hours` searches `now → now+N h`
+  instead of a daily window, so the engine can defer an expensive day to a
+  cheaper next one. The coordinator's `_price_slots` appends an optional
+  predictor **forecast entity**'s slots for times *beyond* the real day-ahead
+  horizon (filtered to `start > last real slot`), adding a confidence margin to
+  their buy price so a forecast window only wins when it's cheaper by more than
+  the margin. Minimum-service still bounds how long a load may be deferred.
 
 See [scheduling-algorithms](../custom_components/load_scheduler/engine.py) (the
 engine docstrings) and the per-module docstrings for details.

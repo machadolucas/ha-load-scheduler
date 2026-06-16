@@ -46,6 +46,13 @@ exposes simple knobs.
 - **Minimum-service guarantee** — a per-load floor (minimum daily delivery / max
   time without running) that overrides the price cap so a load never starves
   (the tank never runs cold; a wet-room floor still dries out).
+- **Multi-day horizon & forecast deferral** — give a load an N-hour horizon
+  instead of a daily window and it can defer an expensive day to a cheaper next
+  day once tomorrow's real prices are known. Beyond that real horizon, an
+  optional **predictor price-forecast sensor** (e.g. a wind + temperature +
+  solar estimate of the day after tomorrow) lets it bet that the *following*
+  24 h will be cheaper — applied with a confidence margin so it only defers when
+  the forecast clearly wins, and always bounded by the minimum-service floor.
 - **Absolute price cap/floor**, **min-run / min-off** dwell, **manual boost**,
   and a **temporary disable** switch.
 - **Restart-safe** — the plan and actuation state survive Home Assistant

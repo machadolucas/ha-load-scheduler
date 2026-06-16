@@ -36,6 +36,8 @@ from .const import (
     CONF_FAILSAFE_START,
     CONF_FEEDBACK_ENTITY,
     CONF_FEEDBACK_IDLE_W,
+    CONF_FORECAST_PRICE_ENTITY,
+    CONF_FORECAST_PRICE_MARGIN,
     CONF_HORIZON_HOURS,
     CONF_LIVE_SELL_ENTITY,
     CONF_MIN_OFF,
@@ -58,6 +60,7 @@ from .const import (
     CONF_TEMP_MIN,
     DEFAULT_BASELINE_W,
     DEFAULT_FEEDBACK_IDLE_W,
+    DEFAULT_FORECAST_PRICE_MARGIN,
     DEFAULT_NAME,
     DEFAULT_NET_EXPORT_THRESHOLD,
     DEFAULT_PRIORITY,
@@ -141,6 +144,18 @@ def _hub_schema(defaults: dict) -> vol.Schema:
                 )
             ),
             vol.Optional(CONF_BASELINE_ENTITY, description=suggest(CONF_BASELINE_ENTITY)): _SENSOR,
+            vol.Optional(
+                CONF_FORECAST_PRICE_ENTITY,
+                description=suggest(CONF_FORECAST_PRICE_ENTITY),
+            ): _SENSOR,
+            vol.Optional(
+                CONF_FORECAST_PRICE_MARGIN,
+                default=defaults.get(CONF_FORECAST_PRICE_MARGIN, DEFAULT_FORECAST_PRICE_MARGIN),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=1, step=0.001, mode=selector.NumberSelectorMode.BOX
+                )
+            ),
             vol.Optional(
                 CONF_NET_ENERGY_ENTITY, description=suggest(CONF_NET_ENERGY_ENTITY)
             ): _SENSOR,

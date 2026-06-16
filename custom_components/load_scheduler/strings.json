@@ -11,6 +11,8 @@
           "solar_forecast_entity": "Solar-production forecast sensor(s) (optional)",
           "consumption_baseline_w": "Baseline household consumption (W)",
           "baseline_entity": "Consumption sensor for the baseline profile (optional)",
+          "forecast_price_entity": "Beyond-tomorrow price-forecast sensor (optional)",
+          "forecast_price_margin": "Forecast confidence margin (€/kWh)",
           "net_energy_entity": "Live net-energy sensor (optional, negative = export)",
           "net_export_threshold": "Export threshold to start diverting (kWh)",
           "live_sell_entity": "Live sell-price sensor (optional)",
@@ -22,6 +24,8 @@
           "solar_forecast_entity": "Per-slot PV forecast sensor(s) (e.g. Solcast 'today' + 'tomorrow', whose 'detailedForecast' is read). Enables valuing slots with solar excess at the sell price.",
           "consumption_baseline_w": "Flat fallback for the always-on house load subtracted from the PV forecast to estimate exportable excess. Used when no baseline sensor is set or it has no statistics yet.",
           "baseline_entity": "A house-consumption power sensor (W). Its long-term statistics build an hour-of-day baseline that's subtracted from the PV forecast — more accurate than the flat value, and it needs no high-frequency history.",
+          "forecast_price_entity": "A predictor sensor estimating prices BEYOND the real day-ahead horizon (e.g. day-after-tomorrow, from Finland wind + temperature + solar forecasts). Used only for slots later than the real prices, so a load with a multi-day horizon can bet on a forecast-cheaper window.",
+          "forecast_price_margin": "Added to forecast prices so a load only defers to a forecast window when it's cheaper than the known prices by at least this much — your confidence in the forecast.",
           "net_energy_entity": "Enables real-time divert: when this shows live export beyond the threshold (and selling isn't worth it), surplus is dispatched to solar-enabled loads by priority.",
           "live_sell_entity": "When set, divert only runs while the live sell price is below the threshold (i.e. selling the surplus isn't worth more than self-consuming it)."
         }
@@ -36,6 +40,8 @@
           "solar_forecast_entity": "Solar-production forecast sensor(s) (optional)",
           "consumption_baseline_w": "Baseline household consumption (W)",
           "baseline_entity": "Consumption sensor for the baseline profile (optional)",
+          "forecast_price_entity": "Beyond-tomorrow price-forecast sensor (optional)",
+          "forecast_price_margin": "Forecast confidence margin (€/kWh)",
           "net_energy_entity": "Live net-energy sensor (optional, negative = export)",
           "net_export_threshold": "Export threshold to start diverting (kWh)",
           "live_sell_entity": "Live sell-price sensor (optional)",

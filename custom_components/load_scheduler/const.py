@@ -21,6 +21,11 @@ CONF_NAME = "name"
 CONF_BUY_PRICE_ENTITY = "buy_price_entity"
 CONF_SELL_PRICE_ENTITY = "sell_price_entity"
 CONF_SOLAR_FORECAST_ENTITY = "solar_forecast_entity"
+# Optional predictor-supplied price forecast for slots BEYOND the real horizon
+# (e.g. a wind/temperature/solar-based estimate of day-after-tomorrow prices).
+CONF_FORECAST_PRICE_ENTITY = "forecast_price_entity"
+CONF_FORECAST_PRICE_MARGIN = "forecast_price_margin"  # €/kWh added to forecast buy
+DEFAULT_FORECAST_PRICE_MARGIN = 0.0
 
 DEFAULT_NAME = "Load Scheduler"
 
