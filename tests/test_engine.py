@@ -11,7 +11,6 @@ import importlib.util
 import pathlib
 import sys
 from datetime import UTC, datetime, timedelta
-from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -32,9 +31,6 @@ Slot = engine.Slot
 LoadParams = engine.LoadParams
 ScheduleMode = engine.ScheduleMode
 RunSource = engine.RunSource
-
-HEL = ZoneInfo("Europe/Helsinki")
-UTC = UTC
 
 
 def make_slots(
@@ -320,50 +316,8 @@ def test_non_sequential_prefers_solar_and_labels_source():
     assert periods[0].source == RunSource.SOLAR
 
 
-# --------------------------------------------------------------------------- #
-# DST correctness
-# --------------------------------------------------------------------------- #
-
-
-def test_dst_spring_forward_slots_stay_contiguous():
-    # EU spring-forward 2026: 01:00 UTC -> Helsinki jumps 03:00 EET to 04:00 EEST.
-    base = datetime(2026, 3, 29, 0, 0, tzinfo=UTC)
-    # Build 12 contiguous 15-min slots straddling the transition, in local tz.
-    starts_utc = [base + timedelta(minutes=15 * i) for i in range(12)]
-    slots = [
-        Slot(
-            start=s.astimezone(HEL),
-            end=(s + timedelta(minutes=15)).astimezone(HEL),
-            buy=float(i),
-        )
-        for i, s in enumerate(starts_utc)
-    ]
-    # The wall-clock hour really does jump across the transition...
-    offsets = {sl.start.utcoffset() for sl in slots}
-    assert len(offsets) == 2  # both EET and EEST present
-    # ...but the engine works on real instants, so a contiguous block is contiguous.
-    params = LoadParams(mode=ScheduleMode.SEQUENTIAL, target_minutes=60, window=full_window(slots))
-    periods = engine.plan_sequential(slots, params)
-    assert len(periods) == 1
-    assert periods[0].minutes == pytest.approx(60)  # 60 real minutes
-
-
-def test_dst_fall_back_total_minutes_real_not_walltime():
-    # EU fall-back 2026: 01:00 UTC -> Helsinki 04:00 EEST back to 03:00 EET.
-    base = datetime(2026, 10, 25, 0, 0, tzinfo=UTC)
-    starts_utc = [base + timedelta(minutes=15 * i) for i in range(12)]
-    # cheapest slots placed around the repeated hour
-    prices = [9, 9, 9, 9, 1, 1, 1, 1, 9, 9, 9, 9]
-    slots = [
-        Slot(
-            start=s.astimezone(HEL),
-            end=(s + timedelta(minutes=15)).astimezone(HEL),
-            buy=prices[i],
-        )
-        for i, s in enumerate(starts_utc)
-    ]
-    params = LoadParams(
-        mode=ScheduleMode.NON_SEQUENTIAL, target_minutes=60, window=full_window(slots)
-    )
-    periods = engine.plan_non_sequential(slots, params)
-    assert total_minutes(periods) == pytest.approx(60)
+# DST correctness is handled at the boundary, not here: price_source normalises
+# all slots to UTC (a DST-free zone) before they reach the engine, and the
+# window resolver anchors to local wall-clock. The engine therefore only ever
+# does DST-free arithmetic. See test_price_source.py (UTC normalisation across a
+# transition) and test_windows.py (wall-clock anchoring / real elapsed).

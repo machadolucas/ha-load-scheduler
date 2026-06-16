@@ -136,3 +136,19 @@ def test_naive_datetime_rejected():
     naive = datetime(2026, 1, 1, 0, 0)  # no tzinfo
     with pytest.raises(ps.PriceFormatError):
         ps.normalize({"prices": [{"time": naive.isoformat(), "price": 1.0}]})
+
+
+def test_normalises_to_utc_across_dst_spring_forward():
+    # Real day-ahead ISO data straddling spring-forward: 02:45+02:00 and
+    # 04:00+03:00 are 15 *real* minutes apart. After UTC normalisation the slots
+    # must stay uniformly 15 min apart — no spurious 1h15m wall-clock gap.
+    prices = [
+        {"time": "2026-03-29T02:30:00+02:00", "price": 1.0},
+        {"time": "2026-03-29T02:45:00+02:00", "price": 2.0},
+        {"time": "2026-03-29T04:00:00+03:00", "price": 3.0},
+        {"time": "2026-03-29T04:15:00+03:00", "price": 4.0},
+    ]
+    slots = ps.normalize({"prices": prices})
+    assert all(s.start.utcoffset() == timedelta(0) for s in slots)  # all UTC now
+    gaps = [b.start - a.start for a, b in zip(slots, slots[1:], strict=False)]
+    assert all(g == timedelta(minutes=15) for g in gaps)

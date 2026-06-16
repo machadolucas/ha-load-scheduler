@@ -26,7 +26,7 @@ start, else inferred from the dominant slot length.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 # Attribute names that hold a *today* list and the matching *tomorrow* list.
 _SPLIT_ATTR_PAIRS: list[tuple[str, str]] = [
@@ -114,7 +114,13 @@ def detect_format(attributes: dict) -> FormatSpec:
 
 
 def _parse_dt(value: object) -> datetime:
-    """Parse an ISO string or pass through a ``datetime`` (must be tz-aware)."""
+    """Parse an ISO string / pass through a ``datetime``, normalised to **UTC**.
+
+    Normalising to UTC here is what keeps the engine DST-correct: all downstream
+    arithmetic (``+timedelta``, subtraction) then runs in a zone without DST, so
+    a slot that straddles a transition is still its true real-time length.
+    Display/actuation converts back to local at the entity layer.
+    """
     if isinstance(value, datetime):
         dt = value
     elif isinstance(value, str):
@@ -123,7 +129,7 @@ def _parse_dt(value: object) -> datetime:
         raise PriceFormatError(f"unparseable start value: {value!r}")
     if dt.tzinfo is None:
         raise PriceFormatError(f"start time is not timezone-aware: {value!r}")
-    return dt
+    return dt.astimezone(UTC)
 
 
 def _infer_slot_length(starts: list[datetime]) -> timedelta:
