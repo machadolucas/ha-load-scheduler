@@ -14,6 +14,7 @@
           "forecast_price_entity": "Beyond-tomorrow price-forecast sensor (optional)",
           "forecast_price_margin": "Forecast confidence margin (€/kWh)",
           "net_energy_entity": "Live net-energy sensor (optional, negative = export)",
+          "predicted_net_energy_entity": "Predicted end-of-interval net-energy sensor (optional)",
           "net_export_threshold": "Export threshold to start diverting (kWh)",
           "live_sell_entity": "Live sell-price sensor (optional)",
           "sell_threshold": "Only divert when live sell is below this (€/kWh)"
@@ -27,6 +28,7 @@
           "forecast_price_entity": "A predictor sensor estimating prices BEYOND the real day-ahead horizon (e.g. day-after-tomorrow, from Finland wind + temperature + solar forecasts). Used only for slots later than the real prices, so a load with a multi-day horizon can bet on a forecast-cheaper window.",
           "forecast_price_margin": "Added to forecast prices so a load only defers to a forecast window when it's cheaper than the known prices by at least this much — your confidence in the forecast.",
           "net_energy_entity": "Enables real-time divert: when this shows live export beyond the threshold (and selling isn't worth it), surplus is dispatched to solar-enabled loads by priority.",
+          "predicted_net_energy_entity": "Optional interval-aware gate. A sensor predicting the net energy by the end of the current metering interval (e.g. the 15-min net extrapolated to its close). When set, a load is only switched ON for divert when BOTH the live and the predicted net show export — so a load isn't started late in an interval when you won't still be exporting by its end.",
           "live_sell_entity": "When set, divert only runs while the live sell price is below the threshold (i.e. selling the surplus isn't worth more than self-consuming it)."
         }
       },
@@ -43,6 +45,7 @@
           "forecast_price_entity": "Beyond-tomorrow price-forecast sensor (optional)",
           "forecast_price_margin": "Forecast confidence margin (€/kWh)",
           "net_energy_entity": "Live net-energy sensor (optional, negative = export)",
+          "predicted_net_energy_entity": "Predicted end-of-interval net-energy sensor (optional)",
           "net_export_threshold": "Export threshold to start diverting (kWh)",
           "live_sell_entity": "Live sell-price sensor (optional)",
           "sell_threshold": "Only divert when live sell is below this (€/kWh)"

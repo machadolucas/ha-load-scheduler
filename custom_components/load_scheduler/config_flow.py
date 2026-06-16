@@ -49,6 +49,7 @@ from .const import (
     CONF_NAME,
     CONF_NET_ENERGY_ENTITY,
     CONF_NET_EXPORT_THRESHOLD,
+    CONF_PREDICTED_NET_ENERGY_ENTITY,
     CONF_PRICE_CAP,
     CONF_PRIORITY,
     CONF_RUNS_PER_DAY,
@@ -160,6 +161,10 @@ def _hub_schema(defaults: dict) -> vol.Schema:
             ),
             vol.Optional(
                 CONF_NET_ENERGY_ENTITY, description=suggest(CONF_NET_ENERGY_ENTITY)
+            ): _SENSOR,
+            vol.Optional(
+                CONF_PREDICTED_NET_ENERGY_ENTITY,
+                description=suggest(CONF_PREDICTED_NET_ENERGY_ENTITY),
             ): _SENSOR,
             vol.Optional(
                 CONF_NET_EXPORT_THRESHOLD,

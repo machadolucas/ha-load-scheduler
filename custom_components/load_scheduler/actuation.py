@@ -47,6 +47,7 @@ from .const import (
     CONF_LIVE_SELL_ENTITY,
     CONF_NET_ENERGY_ENTITY,
     CONF_NET_EXPORT_THRESHOLD,
+    CONF_PREDICTED_NET_ENERGY_ENTITY,
     CONF_SELL_THRESHOLD,
     DEFAULT_NET_EXPORT_THRESHOLD,
     DEFAULT_SELL_THRESHOLD,
@@ -79,6 +80,7 @@ class LoadActuator:
         self._coordinator = coordinator
         data = coordinator.config_entry.data
         self._net_entity: str | None = data.get(CONF_NET_ENERGY_ENTITY)
+        self._predicted_net_entity: str | None = data.get(CONF_PREDICTED_NET_ENERGY_ENTITY)
         self._net_export_threshold: float = float(
             data.get(CONF_NET_EXPORT_THRESHOLD, DEFAULT_NET_EXPORT_THRESHOLD)
         )
@@ -128,6 +130,8 @@ class LoadActuator:
         watched: set[str] = set()
         if self._net_entity:
             watched.add(self._net_entity)
+        if self._predicted_net_entity:
+            watched.add(self._predicted_net_entity)
         if self._live_sell_entity:
             watched.add(self._live_sell_entity)
         for sid in self._coordinator.config_entry.subentries:
@@ -235,6 +239,14 @@ class LoadActuator:
             sell = _as_float(self._hass.states.get(self._live_sell_entity))
             sell_ok = sell is not None and sell < self._sell_threshold
 
+        # Interval-aware gate: only *start* a load when the predicted end-of-interval
+        # net is also exporting, so we don't begin a run we won't still be exporting
+        # for by the close of the 15-min metering interval.
+        predicted_ok = True
+        if self._predicted_net_entity:
+            pred = _as_float(self._hass.states.get(self._predicted_net_entity))
+            predicted_ok = pred is not None and pred < -self._net_export_threshold
+
         # Drop any diverted loads that are no longer eligible (disabled, satisfied…).
         self._diverted = {
             sid
@@ -255,7 +267,7 @@ class LoadActuator:
         def priority(sid: str) -> int:
             return self._coordinator.load_config(sid).priority
 
-        if exporting and sell_ok:
+        if exporting and sell_ok and predicted_ok:
             candidates = [
                 sid
                 for sid in self._coordinator.config_entry.subentries

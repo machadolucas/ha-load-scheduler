@@ -80,6 +80,11 @@ CONF_BASELINE_ENTITY = "baseline_entity"  # consumption sensor → hour-of-day p
 
 # Hub real-time divert settings.
 CONF_NET_ENERGY_ENTITY = "net_energy_entity"  # live net energy; negative = export
+# Optional predicted end-of-interval net energy (e.g. extrapolated over the
+# current 15-min metering interval). When set, divert only turns a load ON when
+# BOTH the current and the predicted net show export — the interval-aware
+# "don't start a load we won't still be exporting for" gate.
+CONF_PREDICTED_NET_ENERGY_ENTITY = "predicted_net_energy_entity"
 CONF_NET_EXPORT_THRESHOLD = "net_export_threshold"  # export beyond this triggers divert
 CONF_LIVE_SELL_ENTITY = "live_sell_entity"  # live sell price (optional gate)
 CONF_SELL_THRESHOLD = "sell_threshold"  # only divert when live sell is below this

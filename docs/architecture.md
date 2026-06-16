@@ -69,6 +69,14 @@ solar entity ─┘ solar_source + baseline → excess ───┤
   plan, so an override shows the truth.
 - **Solar excess** = forecast PV − baseline; allocated to loads highest-priority
   first against a shared residual so no kWh is double-counted.
+- **Real-time divert** uses the accumulated current-interval net-energy sensor
+  (negative = export): add the highest-priority eligible load when exporting past
+  the threshold and the live sell price is below its gate; shed the lowest-priority
+  when importing. An optional **predicted end-of-interval net** sensor gates the
+  *turn-on* (both live and predicted must show export) — the interval-aware
+  "don't start a run we won't still be exporting for" debounce for 15-min net
+  metering. A fixed dwell prevents thrash; an explicit stop (manual off / boost
+  cancel) backs off so divert can't immediately re-grab the load.
 - **Delivered today** (dynamic remaining) — subtracted from the target and the
   min-service floor. With no `delivered_entity` the coordinator measures it from
   the recorder: the feedback element's (or controlled entity's) on-time since
