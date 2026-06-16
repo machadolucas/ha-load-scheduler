@@ -1,0 +1,18 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# NOTE: asyncio_mode + Home Assistant test fixtures (pytest-homeassistant-custom-
+# component) are enabled from M2, when the first HA-side tests land. Until then
+# the pure-engine tests run with nothing but pytest installed.
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+  "B008",   # function calls in argument defaults (HA selector pattern)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["custom_components.load_scheduler"]

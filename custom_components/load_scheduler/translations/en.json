@@ -1,0 +1,24 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Load Scheduler",
+        "description": "Set up the hub that all scheduled loads will share. Point it at the sensor that publishes electricity prices with a forecast for at least the next day. You can add the sell-price and solar-production forecasts now or later; loads (water heater, dishwasher, EV, floor heating, …) are added afterwards from the integration's page.",
+        "data": {
+          "name": "Name",
+          "buy_price_entity": "Buy-price forecast sensor",
+          "sell_price_entity": "Sell-price forecast sensor (optional)",
+          "solar_forecast_entity": "Solar-production forecast sensor (optional)"
+        },
+        "data_description": {
+          "buy_price_entity": "A sensor exposing today/tomorrow price slots in its attributes (e.g. Nord Pool, ENTSO-e, or a day-ahead template). Used to find the cheapest run times.",
+          "sell_price_entity": "What you earn exporting 1 kWh. Enables buy-vs-sell solar arbitration: running on solar costs the foregone sell price.",
+          "solar_forecast_entity": "A per-slot PV forecast (e.g. Solcast 'detailedForecast'). Enables reducing scheduled runtime by expected free solar."
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This price sensor is already configured."
+    }
+  }
+}

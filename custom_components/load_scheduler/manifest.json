@@ -1,0 +1,13 @@
+{
+  "domain": "load_scheduler",
+  "name": "Load Scheduler",
+  "codeowners": ["@machadolucas"],
+  "config_flow": true,
+  "dependencies": ["http", "frontend", "recorder"],
+  "documentation": "https://github.com/machadolucas/ha-load-scheduler",
+  "integration_type": "hub",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/machadolucas/ha-load-scheduler/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
