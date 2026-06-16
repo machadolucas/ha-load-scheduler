@@ -48,11 +48,6 @@ function fmtClock(iso) {
   return sameDay ? time : `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
 }
 
-function fmtPrice(eurPerKwh) {
-  if (eurPerKwh == null) return "";
-  return `${(eurPerKwh * 100).toFixed(1)}c`;
-}
-
 class LoadSchedulerCard extends HTMLElement {
   setConfig(config) {
     if (!config || !Array.isArray(config.entities) || !config.entities.length) {
@@ -101,9 +96,9 @@ class LoadSchedulerCard extends HTMLElement {
         ? `<div class="detail">${periods
             .map(
               (p) =>
-                `<div>${fmtClock(p.start)} → ${fmtClock(p.end)} · ${fmtPrice(
-                  p.avg_cost,
-                )} ${SOURCE_ICON[p.source] || ""}</div>`,
+                `<div>${fmtClock(p.start)} → ${fmtClock(p.end)} ${
+                  SOURCE_ICON[p.source] || ""
+                }</div>`,
             )
             .join("")}</div>`
         : "";
@@ -138,14 +133,14 @@ class LoadSchedulerCard extends HTMLElement {
     this._card.innerHTML = `
       <style>
         .title { font-weight: 600; padding: 8px 12px 2px; }
-        .row { display: flex; align-items: center; gap: 8px; padding: 3px 12px;
-               cursor: pointer; font-size: 0.95em; line-height: 1.25; }
+        .row { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px;
+               padding: 3px 12px; cursor: pointer; font-size: 0.95em; line-height: 1.25; }
         .row .name { flex: 1 1 auto; font-weight: 500; white-space: nowrap;
                overflow: hidden; text-overflow: ellipsis; }
-        .row .when { color: var(--secondary-text-color); }
-        .row .dur { color: var(--secondary-text-color);
+        .row .when { color: var(--secondary-text-color); white-space: nowrap; }
+        .row .dur { color: var(--secondary-text-color); white-space: nowrap;
                font-variant-numeric: tabular-nums; min-width: 2.5em; text-align: right; }
-        .row .badge { width: 1.4em; text-align: center; }
+        .row .badge { white-space: nowrap; text-align: right; flex: 0 0 auto; }
         .row .chev { color: var(--secondary-text-color); width: 0.8em;
                transition: transform 0.15s; }
         .row.expanded .chev { transform: rotate(90deg); }

@@ -243,13 +243,28 @@ def plan_non_sequential(slots: list[Slot], params: LoadParams) -> list[Period]:
         )
         acc += slot.minutes
 
-    # Trim the overshoot off the last-added (most expensive) pick.
+    periods = _merge(picks)
+    # Land on the exact target by trimming the overshoot off the *tail* (latest
+    # period). Trimming the most-expensive pick instead can shorten a slot that
+    # sits mid-run, leaving a sub-minute gap that splits one contiguous run into
+    # two periods on the card; the cost difference for a sub-slot trim is
+    # negligible.
     overshoot = acc - target
-    if overshoot > _EPS and picks:
-        last = picks[-1]
-        last.end = last.end - timedelta(minutes=overshoot)
+    return _trim_tail(periods, overshoot) if overshoot > _EPS else periods
 
-    return _merge(picks)
+
+def _trim_tail(periods: list[Period], overshoot: float) -> list[Period]:
+    """Remove ``overshoot`` minutes from the end of the (time-ordered) periods."""
+    trimmed = list(periods)
+    while overshoot > _EPS and trimmed:
+        last = trimmed[-1]
+        if last.minutes <= overshoot + _EPS:
+            overshoot -= last.minutes
+            trimmed.pop()
+        else:
+            last.end = last.end - timedelta(minutes=overshoot)
+            overshoot = 0.0
+    return trimmed
 
 
 def _contiguous(block: list[Slot]) -> bool:

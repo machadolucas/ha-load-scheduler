@@ -149,6 +149,20 @@ def test_non_sequential_merges_contiguous():
     assert periods[0].minutes == pytest.approx(30)
 
 
+def test_non_sequential_fractional_trim_does_not_split_run():
+    # The priciest slot is time-FIRST; trimming the overshoot off it mid-run used
+    # to leave a sub-minute gap that split one contiguous run into two periods.
+    # The trim must come off the tail so the run stays merged.
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    slots = make_slots(start, [5, 1, 1, 1])  # first slot is the priciest
+    params = LoadParams(
+        mode=ScheduleMode.NON_SEQUENTIAL, target_minutes=47.3, window=full_window(slots)
+    )
+    periods = engine.plan_non_sequential(slots, params)
+    assert len(periods) == 1  # one contiguous run, not split by the trim
+    assert total_minutes(periods) == pytest.approx(47.3)
+
+
 def test_non_sequential_trims_to_exact_minutes():
     start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
     slots = make_slots(start, [1, 2, 9, 9])
