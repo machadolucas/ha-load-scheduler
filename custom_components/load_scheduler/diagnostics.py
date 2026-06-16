@@ -52,10 +52,8 @@ async def async_get_config_entry_diagnostics(
         }
 
     return {
-        "hub": {
-            "buy_price_entity": entry.data.get("buy_price_entity"),
-            "sell_price_entity": entry.data.get("sell_price_entity"),
-            "solar_forecast_entity": entry.data.get("solar_forecast_entity"),
-        },
+        # Full hub config so the sources, forecast and divert wiring are all
+        # verifiable from a diagnostics dump (entity IDs only — nothing secret).
+        "hub": dict(entry.data),
         "loads": loads,
     }

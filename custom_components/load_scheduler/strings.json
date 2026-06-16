@@ -63,7 +63,8 @@
   "config_subentries": {
     "load": {
       "initiate_flow": {
-        "user": "Add load"
+        "user": "Add load",
+        "reconfigure": "Reconfigure load"
       },
       "entry_type": "Load",
       "step": {
