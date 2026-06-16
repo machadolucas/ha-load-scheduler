@@ -31,6 +31,7 @@ from .const import (
 )
 from .engine import Period
 from .models import LoadConfig, build_load_params
+from .persistence import RuntimeStore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -81,6 +82,7 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         self._sell_entity: str | None = entry.data.get(CONF_SELL_PRICE_ENTITY)
         # Per-load runtime state, keyed by subentry_id.
         self.runtime: dict[str, LoadRuntime] = {}
+        self._store = RuntimeStore(hass, entry.entry_id)
         self._init_runtime()
 
     def _init_runtime(self) -> None:
@@ -89,6 +91,27 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
             if subentry_id not in self.runtime:
                 cfg = LoadConfig.from_subentry(subentry.data)
                 self.runtime[subentry_id] = LoadRuntime(target_minutes=cfg.target_minutes)
+
+    async def async_load_runtime(self) -> None:
+        """Restore per-load runtime (target/enabled) from the Store at setup."""
+        data = await self._store.async_load()
+        for subentry_id, subentry in self.config_entry.subentries.items():
+            cfg = LoadConfig.from_subentry(subentry.data)
+            saved = data.get(subentry_id, {})
+            self.runtime[subentry_id] = LoadRuntime(
+                target_minutes=saved.get("target_minutes", cfg.target_minutes),
+                enabled=saved.get("enabled", True),
+            )
+
+    def _runtime_snapshot(self) -> dict:
+        return {
+            sid: {"target_minutes": rt.target_minutes, "enabled": rt.enabled}
+            for sid, rt in self.runtime.items()
+        }
+
+    def load_config(self, subentry_id: str) -> LoadConfig:
+        """The static config for a load subentry."""
+        return LoadConfig.from_subentry(self.config_entry.subentries[subentry_id].data)
 
     @callback
     def async_setup_listeners(self) -> None:
@@ -107,13 +130,15 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         )
 
     async def async_set_target(self, subentry_id: str, minutes: float) -> None:
-        """Update a load's target and recompute."""
+        """Update a load's target, persist it, and recompute."""
         self.runtime[subentry_id].target_minutes = minutes
+        self._store.async_schedule_save(self._runtime_snapshot)
         await self.async_request_refresh()
 
     async def async_set_enabled(self, subentry_id: str, enabled: bool) -> None:
-        """Enable/disable a load and recompute."""
+        """Enable/disable a load, persist it, and recompute."""
         self.runtime[subentry_id].enabled = enabled
+        self._store.async_schedule_save(self._runtime_snapshot)
         await self.async_request_refresh()
 
     def _build_slots(self) -> list[engine.Slot]:

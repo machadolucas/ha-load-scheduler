@@ -150,9 +150,15 @@ class _Pick:
 
 
 def _window_slots(slots: list[Slot], window: tuple[datetime, datetime]) -> list[Slot]:
-    """Slots whose start falls inside ``[window[0], window[1])``, time-ordered."""
+    """Slots that *overlap* ``[window[0], window[1])``, time-ordered.
+
+    Overlap (not just ``start`` inside) so the slot currently in progress — which
+    began just before ``window[0]`` when that is clamped to ``now`` — is still
+    eligible. Without this, a load that should be running *right now* would never
+    be scheduled until the next slot boundary.
+    """
     w_start, w_end = window
-    inside = [s for s in slots if w_start <= s.start < w_end]
+    inside = [s for s in slots if s.end > w_start and s.start < w_end]
     inside.sort(key=lambda s: s.start)
     return inside
 

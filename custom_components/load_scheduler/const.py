@@ -53,3 +53,11 @@ TARGET_STEP = 15
 
 # How often the coordinator recomputes as a safety net (event-driven otherwise).
 UPDATE_INTERVAL_MINUTES = 5
+
+# Persistence: a Store under .storage/ (included in Home Assistant backups).
+STORAGE_VERSION = 1
+SAVE_DELAY = 10  # seconds — debounce runtime writes
+
+# Events fired when a load's controlled entity is switched on/off.
+EVENT_RUN_STARTED = "load_scheduler_run_started"
+EVENT_RUN_ENDED = "load_scheduler_run_ended"

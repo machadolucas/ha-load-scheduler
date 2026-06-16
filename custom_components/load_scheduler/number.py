@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from homeassistant.components.number import NumberMode, RestoreNumber
+from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
@@ -27,12 +27,12 @@ async def async_setup_entry(
         )
 
 
-class LoadTargetNumber(LoadSchedulerEntity, RestoreNumber):
-    """The load's target runtime in minutes; restored across restarts.
+class LoadTargetNumber(LoadSchedulerEntity, NumberEntity):
+    """The load's target runtime in minutes.
 
-    The coordinator's runtime state is the source of truth; this entity is a
-    view + setter over it. (M2b also persists it to ``Store`` so a backup
-    captures it even if RestoreState is lost.)
+    The coordinator's runtime state (persisted to the Store) is the source of
+    truth; this entity is a view + setter over it, so it is naturally restored
+    across restarts without needing RestoreEntity.
     """
 
     _attr_native_min_value = TARGET_MIN
@@ -50,10 +50,3 @@ class LoadTargetNumber(LoadSchedulerEntity, RestoreNumber):
 
     async def async_set_native_value(self, value: float) -> None:
         await self.coordinator.async_set_target(self._subentry_id, value)
-
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-        last = await self.async_get_last_number_data()
-        if last is not None and last.native_value is not None:
-            self.coordinator.runtime[self._subentry_id].target_minutes = last.native_value
-            await self.coordinator.async_request_refresh()

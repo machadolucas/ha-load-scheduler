@@ -7,7 +7,6 @@ from typing import Any
 from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import SUBENTRY_TYPE_LOAD
 from .coordinator import LoadSchedulerConfigEntry
@@ -30,8 +29,12 @@ async def async_setup_entry(
         )
 
 
-class LoadEnabledSwitch(LoadSchedulerEntity, SwitchEntity, RestoreEntity):
-    """When off, the load is not scheduled (its plan is empty)."""
+class LoadEnabledSwitch(LoadSchedulerEntity, SwitchEntity):
+    """When off, the load is not scheduled (its plan is empty).
+
+    State lives in the coordinator's runtime (persisted to the Store), so it is
+    restored across restarts without RestoreEntity.
+    """
 
     _attr_device_class = SwitchDeviceClass.SWITCH
 
@@ -47,10 +50,3 @@ class LoadEnabledSwitch(LoadSchedulerEntity, SwitchEntity, RestoreEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self.coordinator.async_set_enabled(self._subentry_id, False)
-
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-        last = await self.async_get_last_state()
-        if last is not None:
-            self.coordinator.runtime[self._subentry_id].enabled = last.state == "on"
-            await self.coordinator.async_request_refresh()
