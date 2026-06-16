@@ -53,8 +53,14 @@ exposes simple knobs.
   solar estimate of the day after tomorrow) lets it bet that the *following*
   24 h will be cheaper — applied with a confidence margin so it only defers when
   the forecast clearly wins, and always bounded by the minimum-service floor.
-- **Absolute price cap/floor**, **min-run / min-off** dwell, **manual boost**,
-  and a **temporary disable** switch.
+- **Absolute price cap/floor**, **min-run / min-off** dwell, **manual boost**
+  (a toggle — press again to cancel), and a **temporary disable** switch.
+- **Coexist (top-up) mode** — a load can run *alongside* your existing control:
+  the scheduler only ever switches it **on** (cheap hours / solar / safety floor)
+  and only switches **off** runs it started itself, never an external one. It
+  observes and credits manual/automation runs as delivered. Lets you add
+  cheap/green energy on top of (e.g.) floor-heating comfort automations without
+  the two fighting. The `running` sensor reflects the real switch state.
 - **Restart-safe** — the plan and actuation state survive Home Assistant
   restarts; on boot the integration reconciles each load to the state it *should*
   be in (so a load whose run ended during downtime is correctly switched off).

@@ -57,7 +57,16 @@ solar entity ─┘ solar_source + baseline → excess ───┤
 - **Runtime state** (target / enabled / boost) lives in the `Store` (source of
   truth, in backups); entities are views/setters over it.
 - **Actuation precedence** (per tick): manual override → low-temp safety floor →
-  scheduled plan (incl. boost / min-service) → real-time divert → off.
+  scheduled plan (incl. boost / min-service) → real-time divert → off. A manual
+  **off** stops the current run (cancels any boost, suppresses the rest of the
+  active period); a manual **on** is left alone and credited via the measured
+  delivered sensor. Boost is a toggle (press again to cancel).
+- **Coexist (top-up) loads** (`coexist`): the integration only ever switches the
+  load *on*, and only switches *off* a run it started itself — it never turns off
+  an externally-started run (a comfort automation, a manual flip). Lets it add
+  cheap/green energy on top of existing control without fighting it. The
+  `running` binary sensor reflects the **actual controlled-entity state**, not the
+  plan, so an override shows the truth.
 - **Solar excess** = forecast PV − baseline; allocated to loads highest-priority
   first against a shared residual so no kWh is double-counted.
 - **Multi-day horizon** — a load with `horizon_hours` searches `now → now+N h`

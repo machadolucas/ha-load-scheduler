@@ -213,6 +213,12 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         self._store.async_schedule_save(self._runtime_snapshot)
         await self.async_request_refresh()
 
+    async def async_cancel_boost(self, subentry_id: str) -> None:
+        """Cancel an active boost, persist, and recompute."""
+        self.runtime[subentry_id].boost_until = None
+        self._store.async_schedule_save(self._runtime_snapshot)
+        await self.async_request_refresh()
+
     def _price_slots(self) -> list[engine.Slot]:
         """Real price slots, optionally extended with the predictor's forecast.
 

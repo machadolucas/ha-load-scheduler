@@ -27,6 +27,7 @@ from .const import (
     CONF_ALLOW_SOLAR,
     CONF_BASELINE_ENTITY,
     CONF_BUY_PRICE_ENTITY,
+    CONF_COEXIST,
     CONF_CONSUMPTION_BASELINE_W,
     CONF_CONTROLLED_ENTITY,
     CONF_DEADLINE,
@@ -59,6 +60,7 @@ from .const import (
     CONF_TEMP_ENTITY,
     CONF_TEMP_MIN,
     DEFAULT_BASELINE_W,
+    DEFAULT_COEXIST,
     DEFAULT_FEEDBACK_IDLE_W,
     DEFAULT_FORECAST_PRICE_MARGIN,
     DEFAULT_NAME,
@@ -273,6 +275,9 @@ def _load_schema(defaults: dict) -> vol.Schema:
             ): _SENSOR,
             vol.Optional(
                 CONF_ALLOW_SOLAR, default=defaults.get(CONF_ALLOW_SOLAR, True)
+            ): selector.BooleanSelector(),
+            vol.Optional(
+                CONF_COEXIST, default=defaults.get(CONF_COEXIST, DEFAULT_COEXIST)
             ): selector.BooleanSelector(),
             vol.Optional(CONF_DRAW_KW, description=suggest(CONF_DRAW_KW)): selector.NumberSelector(
                 selector.NumberSelectorConfig(

@@ -53,6 +53,14 @@ CONF_MIN_SERVICE = "min_service_minutes"
 CONF_CONTROLLED_ENTITY = "controlled_entity"
 CONF_FAILSAFE_START = "failsafe_start"
 CONF_ALLOW_SOLAR = "allow_solar"
+# Coexist (top-up) mode: the scheduler only ever switches the load ON (cheap
+# hours / solar / safety floor / min-service) and only switches OFF runs it
+# started itself — it never turns off a run an external control (a comfort
+# automation, or a manual flip) started, and credits that external on-time as
+# delivered. Lets the scheduler add cheap/green energy on top of existing
+# control without fighting it.
+CONF_COEXIST = "coexist"
+DEFAULT_COEXIST = False
 CONF_DRAW_KW = "draw_kw"
 CONF_PRIORITY = "priority"
 DEFAULT_PRIORITY = 0

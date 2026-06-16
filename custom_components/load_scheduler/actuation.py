@@ -3,7 +3,10 @@
 The desired on/off for a load at any instant is resolved by precedence:
 
 1. **Manual override** — if the controlled entity was changed out of band, the
-   integration backs off for a grace period (returns "don't touch").
+   integration backs off (returns "don't touch"). A manual **off** stops the
+   current run: it cancels any active boost and suppresses the rest of the active
+   period (not just a short grace), so a load you switch off does not pop back
+   on. A manual **on** is left alone and its run is credited as delivered.
 2. **Low-temp safety floor** — for a load with a temperature sensor configured,
    force heat when it drops below the threshold (Finland winters), regardless of
    price.
@@ -11,6 +14,12 @@ The desired on/off for a load at any instant is resolved by precedence:
 4. **Real-time solar divert** — when there's live export surplus and selling
    isn't worth it, surplus is dispatched to the highest-priority eligible loads.
 5. Otherwise **off**.
+
+**Coexist (top-up) loads** never have step 5 force them off: the integration
+only switches such a load *off* if it was the one that switched it *on*. This
+lets it add cheap/green energy on top of an external control (e.g. floor-heating
+comfort automations) without ever fighting it — external on-runs are observed
+and credited, never cut short.
 
 This also gives restart catch-up: ``async_start`` reconciles once on setup.
 
@@ -80,6 +89,10 @@ class LoadActuator:
         self._last_divert_change: datetime | None = None
         self._override_until: dict[str, datetime] = {}
         self._last_command: dict[str, tuple[bool, datetime]] = {}
+        # Loads the integration currently holds ON (a run it started). Used so a
+        # coexist load is only ever switched off by the integration if it was the
+        # one that switched it on.
+        self._driven: set[str] = set()
         self._unsub_boundary = None
         self._unsubs: list = []
 
@@ -140,7 +153,7 @@ class LoadActuator:
         )
 
     def _note_controlled_change(self, entity_id, event: Event) -> None:
-        """Detect a manual (foreign) change to a controlled entity."""
+        """Detect a manual (foreign) change to a controlled entity and react."""
         now = dt_util.utcnow()
         for sid in self._coordinator.config_entry.subentries:
             cfg = self._coordinator.load_config(sid)
@@ -156,9 +169,30 @@ class LoadActuator:
                 and cmd[0] == is_on
                 and (now - cmd[1]).total_seconds() < _COMMAND_WINDOW_S
             )
-            if not ours:
-                self._override_until[sid] = now + timedelta(seconds=MANUAL_OVERRIDE_GRACE_S)
-                _LOGGER.debug("Manual override on %s; backing off", entity_id)
+            if ours:
+                return
+            grace_until = now + timedelta(seconds=MANUAL_OVERRIDE_GRACE_S)
+            if is_on:
+                # Manual ON: don't immediately undo it; the run is credited via
+                # the measured delivered sensor. It's not a run we started.
+                self._override_until[sid] = grace_until
+                self._driven.discard(sid)
+            else:
+                # Manual OFF: stop the current run. Suppress the rest of the
+                # active period (not just the short grace) and cancel any boost,
+                # so the load does not pop back on.
+                plan = (self._coordinator.data or {}).get(sid)
+                active = plan.active_period(now) if plan else None
+                self._override_until[sid] = max(active.end, grace_until) if active else grace_until
+                self._driven.discard(sid)
+                rt = self._coordinator.runtime.get(sid)
+                if rt is not None and rt.boost_until and now < rt.boost_until:
+                    self._coordinator.config_entry.async_create_task(
+                        self._hass, self._coordinator.async_cancel_boost(sid), "ls_cancel_boost"
+                    )
+            _LOGGER.debug(
+                "Manual override (%s) on %s; backing off", "on" if is_on else "off", entity_id
+            )
             return
 
     # ── real-time divert ─────────────────────────────────────────────────────
@@ -274,7 +308,14 @@ class LoadActuator:
         is_on = state is not None and state.state == "on"
         if desired_on == is_on:
             return
+        if not desired_on and cfg.coexist and sid not in self._driven:
+            # Coexist (top-up): never switch off a run we didn't start.
+            return
         self._last_command[sid] = (desired_on, dt_util.utcnow())
+        if desired_on:
+            self._driven.add(sid)
+        else:
+            self._driven.discard(sid)
         await self._hass.services.async_call(
             "homeassistant",
             SERVICE_TURN_ON if desired_on else SERVICE_TURN_OFF,

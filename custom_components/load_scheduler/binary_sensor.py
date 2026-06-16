@@ -10,7 +10,10 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from homeassistant.helpers.event import async_track_point_in_time
+from homeassistant.helpers.event import (
+    async_track_point_in_time,
+    async_track_state_change_event,
+)
 from homeassistant.util import dt as dt_util
 
 from .const import SUBENTRY_TYPE_LOAD
@@ -35,16 +38,27 @@ async def async_setup_entry(
 
 
 class LoadRunningBinarySensor(LoadSchedulerEntity, BinarySensorEntity):
-    """True while *now* falls inside one of the load's scheduled periods."""
+    """True while the load is actually running.
+
+    For an actuating load this reflects the **controlled entity's real state**,
+    so a manual override (or any out-of-band change) shows the truth rather than
+    the intended schedule. For an informational load (no controlled entity) it
+    falls back to "is *now* inside a scheduled period".
+    """
 
     _attr_device_class = BinarySensorDeviceClass.RUNNING
 
     def __init__(self, coordinator, subentry_id, subentry) -> None:
         super().__init__(coordinator, subentry_id, subentry, "running")
         self._unsub_boundary = None
+        self._unsub_controlled = None
 
     @property
     def is_on(self) -> bool:
+        cfg = self.coordinator.load_config(self._subentry_id)
+        if cfg.controlled_entity:
+            state = self.coordinator.hass.states.get(cfg.controlled_entity)
+            return state is not None and state.state == "on"
         plan = self._plan
         return bool(plan and plan.active_period(dt_util.utcnow()))
 
@@ -93,11 +107,23 @@ class LoadRunningBinarySensor(LoadSchedulerEntity, BinarySensorEntity):
         self._schedule_next_boundary()
         super()._handle_coordinator_update()
 
+    @callback
+    def _controlled_changed(self, _event) -> None:
+        self.async_write_ha_state()
+
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         self._schedule_next_boundary()
+        cfg = self.coordinator.load_config(self._subentry_id)
+        if cfg.controlled_entity:
+            self._unsub_controlled = async_track_state_change_event(
+                self.hass, [cfg.controlled_entity], self._controlled_changed
+            )
 
     async def async_will_remove_from_hass(self) -> None:
         if self._unsub_boundary is not None:
             self._unsub_boundary()
             self._unsub_boundary = None
+        if self._unsub_controlled is not None:
+            self._unsub_controlled()
+            self._unsub_controlled = None

@@ -13,6 +13,7 @@ from datetime import datetime, time, timedelta
 
 from .const import (
     CONF_ALLOW_SOLAR,
+    CONF_COEXIST,
     CONF_CONTROLLED_ENTITY,
     CONF_DEADLINE,
     CONF_DELIVERED_ENTITY,
@@ -35,6 +36,7 @@ from .const import (
     CONF_TARGET_TYPE,
     CONF_TEMP_ENTITY,
     CONF_TEMP_MIN,
+    DEFAULT_COEXIST,
     DEFAULT_FEEDBACK_IDLE_W,
     DEFAULT_MIN_SEPARATION,
     DEFAULT_MIN_SERVICE,
@@ -76,6 +78,7 @@ class LoadConfig:
     min_service_minutes: float
     controlled_entity: str | None
     allow_solar: bool
+    coexist: bool
     draw_kw: float | None
     priority: int
     temp_entity: str | None
@@ -107,6 +110,7 @@ class LoadConfig:
             min_service_minutes=float(data.get(CONF_MIN_SERVICE, DEFAULT_MIN_SERVICE)),
             controlled_entity=data.get(CONF_CONTROLLED_ENTITY),
             allow_solar=bool(data.get(CONF_ALLOW_SOLAR, True)),
+            coexist=bool(data.get(CONF_COEXIST, DEFAULT_COEXIST)),
             draw_kw=(float(data[CONF_DRAW_KW]) if data.get(CONF_DRAW_KW) is not None else None),
             priority=int(data.get(CONF_PRIORITY, DEFAULT_PRIORITY)),
             temp_entity=data.get(CONF_TEMP_ENTITY),
