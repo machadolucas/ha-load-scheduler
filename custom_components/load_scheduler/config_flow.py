@@ -34,21 +34,33 @@ from .const import (
     CONF_DEADLINE,
     CONF_DRAW_KW,
     CONF_EARLIEST,
+    CONF_FEEDBACK_ENTITY,
+    CONF_FEEDBACK_IDLE_W,
+    CONF_LIVE_SELL_ENTITY,
     CONF_MIN_SEPARATION,
     CONF_MIN_SERVICE,
     CONF_MODE,
     CONF_NAME,
+    CONF_NET_ENERGY_ENTITY,
+    CONF_NET_EXPORT_THRESHOLD,
     CONF_PRICE_CAP,
     CONF_PRIORITY,
     CONF_RUNS_PER_DAY,
     CONF_SELL_PRICE_ENTITY,
+    CONF_SELL_THRESHOLD,
     CONF_SOLAR_FORECAST_ENTITY,
     CONF_TARGET_MINUTES,
+    CONF_TEMP_ENTITY,
+    CONF_TEMP_MIN,
     DEFAULT_BASELINE_W,
+    DEFAULT_FEEDBACK_IDLE_W,
     DEFAULT_NAME,
+    DEFAULT_NET_EXPORT_THRESHOLD,
     DEFAULT_PRIORITY,
     DEFAULT_RUNS_PER_DAY,
+    DEFAULT_SELL_THRESHOLD,
     DEFAULT_TARGET_MINUTES,
+    DEFAULT_TEMP_MIN,
     DOMAIN,
     MODE_INFORMATIONAL,
     MODE_NON_SEQUENTIAL,
@@ -119,6 +131,28 @@ def _hub_schema(defaults: dict) -> vol.Schema:
                     step=50,
                     unit_of_measurement="W",
                     mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Optional(
+                CONF_NET_ENERGY_ENTITY, description=suggest(CONF_NET_ENERGY_ENTITY)
+            ): _SENSOR,
+            vol.Optional(
+                CONF_NET_EXPORT_THRESHOLD,
+                default=defaults.get(CONF_NET_EXPORT_THRESHOLD, DEFAULT_NET_EXPORT_THRESHOLD),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=5, step=0.05, mode=selector.NumberSelectorMode.BOX
+                )
+            ),
+            vol.Optional(
+                CONF_LIVE_SELL_ENTITY, description=suggest(CONF_LIVE_SELL_ENTITY)
+            ): _SENSOR,
+            vol.Optional(
+                CONF_SELL_THRESHOLD,
+                default=defaults.get(CONF_SELL_THRESHOLD, DEFAULT_SELL_THRESHOLD),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=5, step=0.001, mode=selector.NumberSelectorMode.BOX
                 )
             ),
         }
@@ -198,6 +232,39 @@ def _load_schema(defaults: dict) -> vol.Schema:
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(
                     min=0, max=100, step=1, mode=selector.NumberSelectorMode.BOX
+                )
+            ),
+            vol.Optional(
+                CONF_TEMP_ENTITY, description=suggest(CONF_TEMP_ENTITY)
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
+            ),
+            vol.Optional(
+                CONF_TEMP_MIN, default=defaults.get(CONF_TEMP_MIN, DEFAULT_TEMP_MIN)
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0,
+                    max=30,
+                    step=0.5,
+                    unit_of_measurement="°C",
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Optional(
+                CONF_FEEDBACK_ENTITY, description=suggest(CONF_FEEDBACK_ENTITY)
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain=["sensor", "binary_sensor"])
+            ),
+            vol.Optional(
+                CONF_FEEDBACK_IDLE_W,
+                default=defaults.get(CONF_FEEDBACK_IDLE_W, DEFAULT_FEEDBACK_IDLE_W),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0,
+                    max=2000,
+                    step=10,
+                    unit_of_measurement="W",
+                    mode=selector.NumberSelectorMode.BOX,
                 )
             ),
         }

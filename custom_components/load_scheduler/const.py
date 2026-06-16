@@ -41,9 +41,29 @@ CONF_DRAW_KW = "draw_kw"
 CONF_PRIORITY = "priority"
 DEFAULT_PRIORITY = 0
 
+# Per-load safety / feedback (M6).
+CONF_TEMP_ENTITY = "temp_entity"  # inside-temperature sensor for the safety floor
+CONF_TEMP_MIN = "temp_min"  # force heat below this (°C)
+CONF_FEEDBACK_ENTITY = "feedback_entity"  # actual-heating power/led signal
+CONF_FEEDBACK_IDLE_W = "feedback_idle_w"  # below this W the element is idle/satisfied
+DEFAULT_TEMP_MIN = 18.0
+DEFAULT_FEEDBACK_IDLE_W = 50.0
+
 # Hub solar settings.
 CONF_CONSUMPTION_BASELINE_W = "consumption_baseline_w"
 DEFAULT_BASELINE_W = 400  # crude flat baseline; M5 derives it from statistics
+
+# Hub real-time divert settings (M6).
+CONF_NET_ENERGY_ENTITY = "net_energy_entity"  # live net energy; negative = export
+CONF_NET_EXPORT_THRESHOLD = "net_export_threshold"  # export beyond this triggers divert
+CONF_LIVE_SELL_ENTITY = "live_sell_entity"  # live sell price (optional gate)
+CONF_SELL_THRESHOLD = "sell_threshold"  # only divert when live sell is below this
+DEFAULT_NET_EXPORT_THRESHOLD = 0.1
+DEFAULT_SELL_THRESHOLD = 0.05
+
+# Real-time control timing.
+MANUAL_OVERRIDE_GRACE_S = 600  # back off this long after a foreign (manual) change
+DIVERT_MIN_DWELL_S = 120  # min time before flipping a divert decision (anti-thrash)
 
 # Schedule modes (string values match engine.ScheduleMode).
 MODE_NON_SEQUENTIAL = "non_sequential"

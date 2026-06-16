@@ -9,13 +9,19 @@
           "buy_price_entity": "Buy-price forecast sensor",
           "sell_price_entity": "Sell-price forecast sensor (optional)",
           "solar_forecast_entity": "Solar-production forecast sensor(s) (optional)",
-          "consumption_baseline_w": "Baseline household consumption (W)"
+          "consumption_baseline_w": "Baseline household consumption (W)",
+          "net_energy_entity": "Live net-energy sensor (optional, negative = export)",
+          "net_export_threshold": "Export threshold to start diverting (kWh)",
+          "live_sell_entity": "Live sell-price sensor (optional)",
+          "sell_threshold": "Only divert when live sell is below this (€/kWh)"
         },
         "data_description": {
           "buy_price_entity": "A sensor exposing today/tomorrow price slots in its attributes (e.g. Nord Pool, ENTSO-e, or a day-ahead template). Used to find the cheapest run times.",
           "sell_price_entity": "What you earn exporting 1 kWh. Enables buy-vs-sell solar arbitration: running on solar costs the foregone sell price.",
           "solar_forecast_entity": "Per-slot PV forecast sensor(s) (e.g. Solcast 'today' + 'tomorrow', whose 'detailedForecast' is read). Enables valuing slots with solar excess at the sell price.",
-          "consumption_baseline_w": "Always-on house load subtracted from the PV forecast to estimate exportable excess. A flat estimate for now (derived from statistics in a later release)."
+          "consumption_baseline_w": "Always-on house load subtracted from the PV forecast to estimate exportable excess. A flat estimate for now (derived from statistics in a later release).",
+          "net_energy_entity": "Enables real-time divert: when this shows live export beyond the threshold (and selling isn't worth it), surplus is dispatched to solar-enabled loads by priority.",
+          "live_sell_entity": "When set, divert only runs while the live sell price is below the threshold (i.e. selling the surplus isn't worth more than self-consuming it)."
         }
       },
       "reconfigure": {
@@ -26,7 +32,11 @@
           "buy_price_entity": "Buy-price forecast sensor",
           "sell_price_entity": "Sell-price forecast sensor (optional)",
           "solar_forecast_entity": "Solar-production forecast sensor(s) (optional)",
-          "consumption_baseline_w": "Baseline household consumption (W)"
+          "consumption_baseline_w": "Baseline household consumption (W)",
+          "net_energy_entity": "Live net-energy sensor (optional, negative = export)",
+          "net_export_threshold": "Export threshold to start diverting (kWh)",
+          "live_sell_entity": "Live sell-price sensor (optional)",
+          "sell_threshold": "Only divert when live sell is below this (€/kWh)"
         }
       }
     },
@@ -61,7 +71,11 @@
             "controlled_entity": "Switch to control (optional)",
             "allow_solar": "Value solar excess for this load",
             "draw_kw": "Load power draw (optional, kW)",
-            "priority": "Solar priority"
+            "priority": "Solar priority",
+            "temp_entity": "Low-temperature safety sensor (optional)",
+            "temp_min": "Force heat below this temperature (°C)",
+            "feedback_entity": "Actual-heating feedback sensor (optional)",
+            "feedback_idle_w": "Element idle below this power (W)"
           },
           "data_description": {
             "mode": "Non-sequential = the cheapest scattered slots (pausable loads). Sequential = the cheapest contiguous block(s). Informational = compute and display only, never switch anything.",
@@ -72,7 +86,9 @@
             "controlled_entity": "A switch / input_boolean the integration turns on and off with the schedule. Leave empty for informational loads.",
             "allow_solar": "When the hub has a solar forecast, value slots with predicted excess at the sell price instead of the buy price.",
             "draw_kw": "The load's power, used to value how much of a slot's solar excess it can actually absorb. Without it, any excess counts as fully solar.",
-            "priority": "When several loads compete for the same solar surplus, higher-priority loads claim it first."
+            "priority": "When several loads compete for the same solar surplus, higher-priority loads claim it first.",
+            "temp_entity": "For comfort/secondary heat (e.g. floor heating): when this temperature drops below the threshold, the load is forced on regardless of price.",
+            "feedback_entity": "Power (or on/off) of the heating element itself (e.g. an LVV LED detector). Used so a load that is already satisfied (running but idle) isn't given more solar."
           }
         }
       }

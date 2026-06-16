@@ -17,6 +17,8 @@ from .const import (
     CONF_DEADLINE,
     CONF_DRAW_KW,
     CONF_EARLIEST,
+    CONF_FEEDBACK_ENTITY,
+    CONF_FEEDBACK_IDLE_W,
     CONF_MIN_SEPARATION,
     CONF_MIN_SERVICE,
     CONF_MODE,
@@ -25,11 +27,15 @@ from .const import (
     CONF_PRIORITY,
     CONF_RUNS_PER_DAY,
     CONF_TARGET_MINUTES,
+    CONF_TEMP_ENTITY,
+    CONF_TEMP_MIN,
+    DEFAULT_FEEDBACK_IDLE_W,
     DEFAULT_MIN_SEPARATION,
     DEFAULT_MIN_SERVICE,
     DEFAULT_PRIORITY,
     DEFAULT_RUNS_PER_DAY,
     DEFAULT_TARGET_MINUTES,
+    DEFAULT_TEMP_MIN,
     MODE_NON_SEQUENTIAL,
 )
 from .engine import LoadParams, ScheduleMode
@@ -62,6 +68,10 @@ class LoadConfig:
     allow_solar: bool
     draw_kw: float | None
     priority: int
+    temp_entity: str | None
+    temp_min: float
+    feedback_entity: str | None
+    feedback_idle_w: float
 
     @classmethod
     def from_subentry(cls, data: Mapping) -> LoadConfig:
@@ -81,6 +91,10 @@ class LoadConfig:
             allow_solar=bool(data.get(CONF_ALLOW_SOLAR, True)),
             draw_kw=(float(data[CONF_DRAW_KW]) if data.get(CONF_DRAW_KW) is not None else None),
             priority=int(data.get(CONF_PRIORITY, DEFAULT_PRIORITY)),
+            temp_entity=data.get(CONF_TEMP_ENTITY),
+            temp_min=float(data.get(CONF_TEMP_MIN, DEFAULT_TEMP_MIN)),
+            feedback_entity=data.get(CONF_FEEDBACK_ENTITY),
+            feedback_idle_w=float(data.get(CONF_FEEDBACK_IDLE_W, DEFAULT_FEEDBACK_IDLE_W)),
         )
 
     @property
