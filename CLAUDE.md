@@ -2,102 +2,104 @@
 
 Working notes for AI agents and future-me. Read this before changing code.
 
-**Status (beta):** M0–M7 are complete and tested (engine, price/solar/window
-normalization, coordinator, all entities + calendar, actuation with restart
-catch-up, persistence, reconfigure, validation, solar forecast + allocation +
-real-time divert, statistics baseline, repairs, failsafe, bundled card). 75
-tests pass under `.venv313` (HA needs py3.13, not 3.14). Still planned: kWh/EV
-target mode + dynamic remaining; a bespoke run-history card view. CI workflow
-files are present locally but git-ignored (the push token lacks `workflow`
-scope). See `docs/architecture.md` for the module map.
+**Status (beta):** all features below are implemented and covered by tests (run
+them — see Dev workflow). Tests run under a Python **3.13** environment because
+Home Assistant doesn't support 3.14 yet. The CI workflow files exist locally but
+are git-ignored (the push token lacks `workflow` scope). See
+`docs/architecture.md` for the module map and data flow.
 
 ## What this is
 
 A Home Assistant custom integration (`load_scheduler`) that schedules flexible
-loads into the cheapest/greenest times from a price forecast. It originated as a
-replacement for a pile of template-sensor + calendar-bus + solar-divert
-automations on the author's home server (the `macserver` repo). The full design
-rationale and the decisions behind it live in the approved plan at
-`~/.claude/plans/structured-beaming-pixel.md` — consult it for the *why*; this
-file is the *how*.
+loads (water heater, dishwasher, EV, floor heating) into the cheapest/greenest
+times from a price forecast. It replaces a pile of template-sensor +
+calendar-bus + solar-divert automations on the author's home server (the
+`macserver` repo). Design rationale lives in the approved plan at
+`~/.claude/plans/structured-beaming-pixel.md` (the *why*); this file is the *how*.
 
-## Architecture (target)
+## Architecture
 
-- **Hub config entry** — shared resources + global coordination: price
-  forecast (buy + optional sell), solar forecast, the cross-load **allocator**
-  and real-time **divert controller**, one shared `calendar`, persistence,
-  diagnostics, repairs, and the frontend card registration.
+- **Hub config entry** — shared resources + coordination: price forecast (buy +
+  optional sell), solar forecast(s) + consumption baseline, the coordinator
+  (per-load planning + priority solar allocation), the actuator (incl. live
+  divert), one shared `calendar`, persistence, diagnostics, repairs, and the
+  bundled-card registration.
 - **One config *subentry* per load** — its parameters + its own device and
-  entities. (Subentry API is relatively new; the `homeassistant` floor in
-  `hacs.json` must track it.)
+  entities. The `ConfigSubentry` API is relatively new; the `homeassistant`
+  floor in `hacs.json` tracks it.
 
-### Module map (`custom_components/load_scheduler/`)
+### Modules (`custom_components/load_scheduler/`)
 
-| File | Role | Status |
+| File | Role | HA? |
 |---|---|---|
-| `engine.py` | **Pure** scheduling algorithms. No HA imports. The testable core. | ✅ M1 |
-| `const.py` | Domain + config keys. | ✅ |
-| `__init__.py` | Hub setup/unload; startup reconciliation (M2). | stub |
-| `config_flow.py` | Hub flow now; per-load `ConfigSubentryFlow` + reconfigure (M2/M3). | hub only |
-| `coordinator.py` | PriceCoordinator, SolarCoordinator, Allocator, DivertController. | M2+ |
-| `price_source.py` | `PriceAdaptor`/`Raw`-style normalisation (buy+sell → 15-min slots). | M3 |
-| `persistence.py` | `Store` wrapper (plans, actuation state, delivered-today). | M2 |
-| `actuation.py` | Drive controlled entities + reconciliation + events. | M2 |
-| `binary_sensor / sensor / number / switch / button / calendar` | Entities. | M2+ |
-| `diagnostics.py`, `repairs.py` | Redacted dump (= test fixtures) + issue registry. | M3 |
-| `frontend/` | Bundled Lovelace card (TS → `dist/`). | M7 |
+| `engine.py` | **Pure** scheduling: modes, effective cost, min-service, cap, min-run/off, merge | no |
+| `price_source.py` | Normalise price entities → UTC slots (buy + optional sell) | no |
+| `solar_source.py` | Parse PV forecasts (Solcast etc.) → per-slot energy | no |
+| `windows.py` | DST-safe window + next-time resolution | no |
+| `baseline.py` | Hour-of-day consumption profile from samples | no |
+| `models.py` | Subentry config → `LoadConfig` → `LoadParams` (target conversion, dynamic remaining) | no |
+| `coordinator.py` | Read sources, allocate solar by priority, run engine per load, statistics baseline, repairs, failsafe | yes |
+| `actuation.py` | Resolve desired state + drive controlled entities, real-time divert, restart catch-up | yes |
+| `persistence.py` | `Store` for runtime (target / enabled / boost) | yes |
+| `config_flow.py` | Hub flow + per-load subentry wizard; both reconfigurable | yes |
+| `binary_sensor`/`sensor`/`number`/`switch`/`button`/`calendar` | Entities | yes |
+| `diagnostics.py`, `repairs` (strings) | Support | yes |
+| `frontend/load-scheduler-card.js` | Bundled vanilla-JS Lovelace card | — |
 
 ## The engine contract (read before touching `engine.py`)
 
 - Everything is **timezone-aware**; the engine **never calls `now()`** — pass it.
-- Do time math off **actual slot boundaries** from the price source (correct UTC
-  offset already), never `naive + timedelta(hours=n)`. This is what makes DST
-  (23h/25h days) correct.
+  It operates in **UTC** (`price_source` normalises slots to UTC), so all
+  arithmetic is DST-free; `windows` anchors to local wall-clock.
 - Durations are **minutes** (floats); the final run is trimmed to the exact
-  minute.
-- `effective_cost(slot)` = `buy` when importing, `sell` (foregone) when on solar
+  minute. kWh targets are converted to minutes at the `number` entity, so the
+  engine never sees kWh.
+- `effective_cost(slot)` = `buy` when importing, `sell` (foregone) on solar
   excess, blended when partial.
-- `min_service_minutes` is a cap-exempt floor: `target = max(target, min_service)`,
-  and the price `cap` only filters the discretionary minutes above the floor.
+- `min_service_minutes` is a cap-exempt floor: `target = max(target,
+  min_service)`, and the price `cap` only filters discretionary minutes above
+  the floor. Dynamic remaining subtracts delivered-today from both.
 
 ## Control & safety model (do not regress)
 
-Per-load **control policy**:
-- **top-up** (LVV, EV): additive — only ever turned ON for cheap/solar; ends a
-  run early when an **actual-heating feedback** (e.g. LVV LED detector / power)
-  shows the element went idle.
-- **comfort-shed** (floor heating; heat pumps are primary): may be kept **OFF**
-  when expensive, with escapes — minimum dry-out, thermostat satisfied
-  (power < ~50 W), and a **low-temp safety floor** (force heat below ~18 °C).
+There is no policy enum — load *types* are expressed through config:
 
-Actuator precedence per tick: safety floor → manual override (back off on a
-foreign-context change) → boost → minimum-service → comfort-shed → solar divert
-→ scheduled run → off. Anti-thrash via min-on/min-off dwell + hysteresis.
-Floor-heating shed must coordinate with the existing `price_hold_multi_level`
-system (don't drive the same switch from two places).
+- **Top-up** (LVV, EV): `target > 0`, `allow_solar`; an optional
+  `feedback_entity` marks the load "satisfied" (running but element idle, e.g. a
+  full tank) so it isn't given more solar.
+- **Comfort-shed / secondary heat** (floor heating; heat pumps are primary):
+  `target = 0` + a `min_service` daily dry-out + a `temp_entity`/`temp_min`
+  **low-temp safety floor** + `allow_solar`. It then only runs on solar divert,
+  the dry-out minimum, or when the room is too cold — i.e. off when expensive.
+
+Actuator precedence per tick (`actuation.py`): **manual override** (a
+foreign-context change backs off for a grace period) → **low-temp safety floor**
+→ **scheduled plan** (cheap/solar/min-service/boost) → **real-time divert** (live
+export surplus, sell-gated, allocated by priority, min-dwell anti-thrash) →
+**off**. Floor-heating shed overlaps the existing `price_hold_multi_level`
+system — don't let two controllers drive the same switch.
 
 ## Dev workflow
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements_test.txt   # pulls HA for HA-side tests
-.venv/bin/pytest                                  # engine tests need only pytest
-.venv/bin/ruff check . && .venv/bin/ruff format --check .
+# HA-side tests need Python 3.13 (HA doesn't support 3.14):
+uv venv --python 3.13 .venv313
+uv pip install --python .venv313/bin/python -r requirements_test.txt ruff
+.venv313/bin/python -m pytest
+.venv313/bin/ruff check . && .venv313/bin/ruff format --check .
 ```
 
-- The engine tests load `engine.py` via `importlib` (so they never import the
-  package `__init__`, hence no HA needed). Keep `engine.py` HA-free.
-- HA-side tests (from M2) use `pytest-homeassistant-custom-component`; enable
-  `asyncio_mode = "auto"` in `pyproject.toml` then.
-- CI: `.github/workflows/validate.yaml` (hassfest + HACS) and `test.yaml` (ruff +
-  pytest + coverage). Raise `--cov-fail-under=90` once HA-side tests exist.
+- The pure tests (`test_engine`/`price_source`/`windows`/`baseline`) load their
+  module via `importlib`, so they run with only `pytest`. **Keep those modules
+  HA-free.** The `tests/ha/` tests use `pytest-homeassistant-custom-component`.
+- Prefer `ha_reload`-friendly changes; after editing run the full suite.
 
 ## Conventions
 
-- Comment the *why*, not the *what*; match the density already in `engine.py`.
-- New scheduling behaviour goes in `engine.py` as a pure function **with tests
-  first**, then gets wired into the coordinator.
-- Capture real price/solar payloads as test fixtures (the `diagnostics.py` dump
-  is designed to double as a fixture, per the `nordpool_planner` pattern).
-- Don't commit secrets; the integration stores config in the config entry and
-  state in `.storage/` (both covered by HA backups).
+- Comment the *why*, not the *what*; match the density in `engine.py`.
+- New scheduling behaviour goes in `engine.py` (or another pure module) as a
+  tested pure function first, then gets wired into the coordinator.
+- Capture real price/solar payloads as fixtures (`diagnostics.py` doubles as a
+  fixture source).
+- Don't commit secrets; config lives in the config entry and runtime state in
+  `.storage/` (both in HA backups).

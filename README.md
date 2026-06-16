@@ -13,11 +13,8 @@ ad-hoc solar-divert automations with **one configurable integration**: a hub
 that holds the shared price/solar sources, and one entry per load that you set
 up through a guided wizard.
 
-> **Status: beta (v0.x).** Feature-complete through real-time solar divert —
-> scheduling, actuation with restart catch-up, solar arbitration (forecast +
-> priority allocation + live divert), the dashboard card, diagnostics and repair
-> issues are all in place and covered by tests. Not yet in the HACS default
-> store; install as a custom repository (below).
+> **Status: beta.** Install as a HACS custom repository (below) — not yet in the
+> HACS default store. Backed by an extensive test suite.
 
 ## Why
 
@@ -36,8 +33,10 @@ exposes simple knobs.
   - *Sequential* — one or more **contiguous** blocks of a fixed length, with
     support for **multiple non-colliding runs per day** (e.g. a washing machine
     twice) and a minimum separation between them.
-- **Runtime targets** — schedule by minutes of run time (stored in minutes for
-  sub-hour precision). A kWh/EV target mode is planned.
+- **Runtime *or* energy targets** — schedule by minutes of run time, or by kWh
+  to deliver at the load's power draw (EV charging). An optional "delivered
+  today" sensor shrinks the remaining target (dynamic remaining), so a load that
+  already ran enough — e.g. on solar — is scheduled for less or skipped.
 - **Informational mode** — compute and display the cheapest time without
   actuating anything (e.g. a non-connected dishwasher you start by hand).
 - **Solar arbitration** — value each slot at its *effective cost*: the buy price
@@ -53,9 +52,9 @@ exposes simple knobs.
   restarts; on boot the integration reconciles each load to the state it *should*
   be in (so a load whose run ended during downtime is correctly switched off).
 - **DST-correct** for 23h/25h days.
-- **Pluggable parameter sources** — the target, minimum-service, etc. can be a
-  fixed value, an integration `number`, an external sensor (e.g. a future
-  predictor), or set via a service.
+- **Predictor-friendly** — the target is a writable `number` entity, so an
+  external model can push a predicted value; per-run events and the optional
+  "delivered today" sensor give it signals to learn from.
 - **Compact dashboard card** (bundled) showing upcoming runs (run history via
   Home Assistant's built-in History card for now).
 - **Backs up with Home Assistant** — all config + state lives in the config
@@ -86,23 +85,14 @@ Each load exposes a `binary_sensor` (running), a merged `schedule` sensor (next
 start + the upcoming periods), a `number` (target), an `enabled` switch and a
 `boost` button; the hub exposes one shared `calendar`.
 
-## Roadmap
+## Planned
 
-| Milestone | Scope |
-|---|---|
-| M0 ✅ | Repo scaffold, hub config flow, CI |
-| M1 ✅ | Pure scheduling engine + tests |
-| M2 ✅ | One load end-to-end: entities, coordinator, actuation, restart catch-up, persistence |
-| M3 ✅ | Reconfigure flows, price validation, boost, calendar, diagnostics, native repairs, min-run/off, failsafe |
-| M4 ✅ | Solar-aware effective cost (forecast-only) |
-| M5 ✅ | Cross-load solar allocation by priority + statistics-based baseline |
-| M6 ✅ | Real-time solar divert + low-temp safety floor + manual override (supersedes the `Solar - Auto …` automations) |
-| M7 ✅ | Bundled dashboard card |
-| M8 🚧 | HACS release polish |
+- A bespoke run-history view in the card (today the built-in History card over
+  the `…_running` binary sensors covers it).
+- HACS default-store submission (brands entry + screenshots).
 
-Still planned: kWh/EV target mode + dynamic remaining; a bespoke run-history
-card view. See [`CLAUDE.md`](CLAUDE.md) and [`docs/`](docs/) for architecture and
-design notes.
+See [`CLAUDE.md`](CLAUDE.md) and [`docs/`](docs/) for architecture and design
+notes.
 
 ## Development
 

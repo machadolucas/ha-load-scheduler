@@ -4,9 +4,6 @@ The hub flow selects the shared price (and optional solar) sources and supports
 reconfigure. Each load is added/edited as a ``ConfigSubentry`` via the per-load
 wizard (``async_get_supported_subentry_types``), which shares one ``init`` step
 between add and reconfigure.
-
-Solar options and the pluggable parameter sources are layered on in later
-milestones.
 """
 
 from __future__ import annotations

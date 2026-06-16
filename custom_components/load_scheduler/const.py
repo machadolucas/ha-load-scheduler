@@ -51,7 +51,7 @@ CONF_DRAW_KW = "draw_kw"
 CONF_PRIORITY = "priority"
 DEFAULT_PRIORITY = 0
 
-# Per-load safety / feedback (M6).
+# Per-load safety / feedback.
 CONF_TEMP_ENTITY = "temp_entity"  # inside-temperature sensor for the safety floor
 CONF_TEMP_MIN = "temp_min"  # force heat below this (°C)
 CONF_FEEDBACK_ENTITY = "feedback_entity"  # actual-heating power/led signal
@@ -64,7 +64,7 @@ CONF_CONSUMPTION_BASELINE_W = "consumption_baseline_w"
 DEFAULT_BASELINE_W = 400  # flat fallback baseline (W)
 CONF_BASELINE_ENTITY = "baseline_entity"  # consumption sensor → hour-of-day profile
 
-# Hub real-time divert settings (M6).
+# Hub real-time divert settings.
 CONF_NET_ENERGY_ENTITY = "net_energy_entity"  # live net energy; negative = export
 CONF_NET_EXPORT_THRESHOLD = "net_export_threshold"  # export beyond this triggers divert
 CONF_LIVE_SELL_ENTITY = "live_sell_entity"  # live sell price (optional gate)

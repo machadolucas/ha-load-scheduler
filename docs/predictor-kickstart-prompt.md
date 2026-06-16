@@ -21,18 +21,22 @@ block, fill the brackets, and go.
 > - **outdoor temperature** and **incoming (mains) water temperature**,
 > - season / day of week.
 >
-> The Load Scheduler already exposes the hooks a predictor needs:
+> The Load Scheduler exposes these hooks:
 >
-> - **Output:** write the predicted runtime to the load's target. Three equivalent
->   ways — set the integration's `number.<load>_target`, publish my own sensor and
->   point the load's *target source* at it, or call the
->   `load_scheduler.set_parameter` service (supports an expiry). I can also drive
->   the **minimum-service** thresholds the same way (e.g. lower them when the
->   house is empty for a week).
-> - **Training signal:** the integration fires `load_scheduler_run_started` /
->   `load_scheduler_run_ended` events and tracks **delivered-today** (measured
->   from the actual-heating feedback, not switch-on time). For the LVV the real
->   delivery is visible via `binary_sensor.leddetector_water_heater` /
+> - **Output (push the prediction):** write the load's target with
+>   `number.set_value` on `number.<load>_target` — minutes for a runtime load, or
+>   kWh for an energy load. That is the supported hook today (a dedicated service
+>   or an external target-source binding may be added later). The per-load
+>   **minimum-service** floor is currently a config value (set via the load's
+>   reconfigure), not a live entity.
+> - **Dynamic remaining:** the scheduler subtracts an optional per-load
+>   "delivered today" sensor from the target, so the predictor can instead (or
+>   also) influence *how much remains*. Point it at e.g.
+>   `sensor.lvv_heating_during_last_24h`.
+> - **Training signals:** the integration fires `load_scheduler_run_started` /
+>   `load_scheduler_run_ended` events, and `binary_sensor.<load>_running` is
+>   recorded. Actual LVV heating is visible via
+>   `binary_sensor.leddetector_water_heater` /
 >   `sensor.leddetector_water_heater_power`.
 >
 > Relevant existing entities in my HA:
@@ -68,10 +72,10 @@ block, fill the brackets, and go.
 
 | Need | Hook |
 |---|---|
-| Push a predicted target | `number.<load>_target`, external target-source entity, or `load_scheduler.set_parameter` |
-| Push minimum-service | same pluggable-source mechanism |
-| Observe actual runs | events `load_scheduler_run_started` / `_ended` |
-| Observe delivery | `delivered-today` (from actual-heating feedback) |
+| Push a predicted target | write `number.<load>_target` (`number.set_value`) — minutes, or kWh in energy mode |
+| Influence remaining | the load's optional "delivered today" sensor is subtracted from the target |
+| Observe actual runs | events `load_scheduler_run_started` / `_ended`; recorded `binary_sensor.<load>_running` |
+| Minimum-service floor | config (per-load reconfigure) — not yet a live entity |
 
 ## Notes captured this session
 
