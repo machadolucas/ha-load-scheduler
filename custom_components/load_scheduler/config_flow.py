@@ -27,9 +27,12 @@ from homeassistant.helpers import selector
 
 from . import price_source
 from .const import (
+    CONF_ALLOW_SOLAR,
     CONF_BUY_PRICE_ENTITY,
+    CONF_CONSUMPTION_BASELINE_W,
     CONF_CONTROLLED_ENTITY,
     CONF_DEADLINE,
+    CONF_DRAW_KW,
     CONF_EARLIEST,
     CONF_MIN_SEPARATION,
     CONF_MIN_SERVICE,
@@ -40,6 +43,7 @@ from .const import (
     CONF_SELL_PRICE_ENTITY,
     CONF_SOLAR_FORECAST_ENTITY,
     CONF_TARGET_MINUTES,
+    DEFAULT_BASELINE_W,
     DEFAULT_NAME,
     DEFAULT_RUNS_PER_DAY,
     DEFAULT_TARGET_MINUTES,
@@ -100,7 +104,21 @@ def _hub_schema(defaults: dict) -> vol.Schema:
             vol.Optional(
                 CONF_SOLAR_FORECAST_ENTITY,
                 description=suggest(CONF_SOLAR_FORECAST_ENTITY),
-            ): _SENSOR,
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="sensor", multiple=True)
+            ),
+            vol.Optional(
+                CONF_CONSUMPTION_BASELINE_W,
+                default=defaults.get(CONF_CONSUMPTION_BASELINE_W, DEFAULT_BASELINE_W),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0,
+                    max=5000,
+                    step=50,
+                    unit_of_measurement="W",
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
         }
     )
 
@@ -160,6 +178,18 @@ def _load_schema(defaults: dict) -> vol.Schema:
                 CONF_CONTROLLED_ENTITY, description=suggest(CONF_CONTROLLED_ENTITY)
             ): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain=["switch", "input_boolean"])
+            ),
+            vol.Optional(
+                CONF_ALLOW_SOLAR, default=defaults.get(CONF_ALLOW_SOLAR, True)
+            ): selector.BooleanSelector(),
+            vol.Optional(CONF_DRAW_KW, description=suggest(CONF_DRAW_KW)): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0,
+                    max=50,
+                    step=0.1,
+                    unit_of_measurement="kW",
+                    mode=selector.NumberSelectorMode.BOX,
+                )
             ),
         }
     )

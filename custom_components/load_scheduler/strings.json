@@ -8,12 +8,14 @@
           "name": "Name",
           "buy_price_entity": "Buy-price forecast sensor",
           "sell_price_entity": "Sell-price forecast sensor (optional)",
-          "solar_forecast_entity": "Solar-production forecast sensor (optional)"
+          "solar_forecast_entity": "Solar-production forecast sensor(s) (optional)",
+          "consumption_baseline_w": "Baseline household consumption (W)"
         },
         "data_description": {
           "buy_price_entity": "A sensor exposing today/tomorrow price slots in its attributes (e.g. Nord Pool, ENTSO-e, or a day-ahead template). Used to find the cheapest run times.",
           "sell_price_entity": "What you earn exporting 1 kWh. Enables buy-vs-sell solar arbitration: running on solar costs the foregone sell price.",
-          "solar_forecast_entity": "A per-slot PV forecast (e.g. Solcast 'detailedForecast'). Enables reducing scheduled runtime by expected free solar."
+          "solar_forecast_entity": "Per-slot PV forecast sensor(s) (e.g. Solcast 'today' + 'tomorrow', whose 'detailedForecast' is read). Enables valuing slots with solar excess at the sell price.",
+          "consumption_baseline_w": "Always-on house load subtracted from the PV forecast to estimate exportable excess. A flat estimate for now (derived from statistics in a later release)."
         }
       },
       "reconfigure": {
@@ -23,7 +25,8 @@
           "name": "Name",
           "buy_price_entity": "Buy-price forecast sensor",
           "sell_price_entity": "Sell-price forecast sensor (optional)",
-          "solar_forecast_entity": "Solar-production forecast sensor (optional)"
+          "solar_forecast_entity": "Solar-production forecast sensor(s) (optional)",
+          "consumption_baseline_w": "Baseline household consumption (W)"
         }
       }
     },
@@ -55,7 +58,9 @@
             "min_separation_minutes": "Minimum separation between runs (optional)",
             "min_service_minutes": "Minimum service per day (optional)",
             "price_cap": "Maximum price (optional, €/kWh)",
-            "controlled_entity": "Switch to control (optional)"
+            "controlled_entity": "Switch to control (optional)",
+            "allow_solar": "Value solar excess for this load",
+            "draw_kw": "Load power draw (optional, kW)"
           },
           "data_description": {
             "mode": "Non-sequential = the cheapest scattered slots (pausable loads). Sequential = the cheapest contiguous block(s). Informational = compute and display only, never switch anything.",
@@ -63,7 +68,9 @@
             "runs_per_day": "For sequential loads, how many separate blocks to schedule (e.g. run a washing machine twice).",
             "min_service_minutes": "A guaranteed minimum that runs even when prices are above the cap, so the load never starves.",
             "price_cap": "Discretionary runtime above the minimum is only scheduled at or below this price.",
-            "controlled_entity": "A switch / input_boolean the integration turns on and off with the schedule. Leave empty for informational loads."
+            "controlled_entity": "A switch / input_boolean the integration turns on and off with the schedule. Leave empty for informational loads.",
+            "allow_solar": "When the hub has a solar forecast, value slots with predicted excess at the sell price instead of the buy price.",
+            "draw_kw": "The load's power, used to value how much of a slot's solar excess it can actually absorb. Without it, any excess counts as fully solar."
           }
         }
       }

@@ -36,6 +36,12 @@ CONF_MIN_SEPARATION = "min_separation_minutes"
 CONF_PRICE_CAP = "price_cap"
 CONF_MIN_SERVICE = "min_service_minutes"
 CONF_CONTROLLED_ENTITY = "controlled_entity"
+CONF_ALLOW_SOLAR = "allow_solar"
+CONF_DRAW_KW = "draw_kw"
+
+# Hub solar settings.
+CONF_CONSUMPTION_BASELINE_W = "consumption_baseline_w"
+DEFAULT_BASELINE_W = 400  # crude flat baseline; M5 derives it from statistics
 
 # Schedule modes (string values match engine.ScheduleMode).
 MODE_NON_SEQUENTIAL = "non_sequential"

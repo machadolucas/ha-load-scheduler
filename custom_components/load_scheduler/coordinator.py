@@ -6,8 +6,9 @@ engine for every load subentry, keyed by ``subentry_id``. Recompute is
 event-driven (price-entity change, a load's target/enable change, a periodic
 safety tick) — there is no polling of an external API.
 
-Solar excess is left at zero here (M2); the solar coordinator / allocator add
-it in M4+. Actuation, persistence and restart catch-up are layered on in M2b.
+Solar excess (M4) is folded into each slot from the configured solar forecast(s)
+minus a flat consumption baseline, so the engine values solar slots at the sell
+price. Cross-load allocation (M5) and real-time divert (M6) build on this.
 """
 
 from __future__ import annotations
@@ -22,10 +23,13 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
-from . import engine, price_source
+from . import engine, price_source, solar_source
 from .const import (
     CONF_BUY_PRICE_ENTITY,
+    CONF_CONSUMPTION_BASELINE_W,
     CONF_SELL_PRICE_ENTITY,
+    CONF_SOLAR_FORECAST_ENTITY,
+    DEFAULT_BASELINE_W,
     DOMAIN,
     UPDATE_INTERVAL_MINUTES,
 )
@@ -81,6 +85,11 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         )
         self._buy_entity: str = entry.data[CONF_BUY_PRICE_ENTITY]
         self._sell_entity: str | None = entry.data.get(CONF_SELL_PRICE_ENTITY)
+        solar = entry.data.get(CONF_SOLAR_FORECAST_ENTITY) or []
+        self._solar_entities: list[str] = [solar] if isinstance(solar, str) else list(solar)
+        self._baseline_kw: float = (
+            float(entry.data.get(CONF_CONSUMPTION_BASELINE_W, DEFAULT_BASELINE_W)) / 1000.0
+        )
         # Per-load runtime state, keyed by subentry_id.
         self.runtime: dict[str, LoadRuntime] = {}
         self._store = RuntimeStore(hass, entry.entry_id)
@@ -126,6 +135,7 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         watched = [self._buy_entity]
         if self._sell_entity:
             watched.append(self._sell_entity)
+        watched.extend(self._solar_entities)
         self.config_entry.async_on_unload(
             async_track_state_change_event(self.hass, watched, self._handle_source_change)
         )
@@ -164,8 +174,39 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
                 forecast = price_source.merge_sell(
                     forecast, price_source.slots_from_state(sell_state)
                 )
-        return [
+        slots = [
             engine.Slot(start=fs.start, end=fs.end, buy=fs.buy, sell=fs.sell) for fs in forecast
+        ]
+        return self._apply_solar(slots)
+
+    def _apply_solar(self, slots: list[engine.Slot]) -> list[engine.Slot]:
+        """Attach predicted solar excess (kWh) to each slot, when solar is set.
+
+        excess = forecast PV energy in the slot − a flat consumption baseline
+        (M5 replaces the flat baseline with one derived from statistics).
+        """
+        forecasts: list[list[solar_source.SolarPeriod]] = []
+        for entity_id in self._solar_entities:
+            state = self.hass.states.get(entity_id)
+            if state is None:
+                continue
+            try:
+                forecasts.append(solar_source.parse_solar(dict(state.attributes)))
+            except solar_source.SolarFormatError as err:
+                _LOGGER.warning("Solar source %s unusable: %s", entity_id, err)
+        if not forecasts:
+            return slots
+        merged = solar_source.merge_solar(*forecasts)
+        kwh = solar_source.available_kwh_by_slot(merged, slots)
+        return [
+            engine.Slot(
+                start=s.start,
+                end=s.end,
+                buy=s.buy,
+                sell=s.sell,
+                excess_kwh=max(0.0, kwh.get(s.start, 0.0) - self._baseline_kw * (s.minutes / 60.0)),
+            )
+            for s in slots
         ]
 
     async def _async_update_data(self) -> dict[str, LoadPlan]:
@@ -188,7 +229,13 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
             periods: list[Period] = []
             if rt.enabled:
                 if slots:
-                    params = build_load_params(cfg, now, rt.target_minutes)
+                    params = build_load_params(
+                        cfg,
+                        now,
+                        rt.target_minutes,
+                        solar_enabled=cfg.allow_solar and bool(self._solar_entities),
+                        draw_kw=cfg.draw_kw,
+                    )
                     periods = engine.compute_plan(slots, params)
                 else:
                     plan.error = "no_price_data"

@@ -12,8 +12,10 @@ from dataclasses import dataclass
 from datetime import datetime, time
 
 from .const import (
+    CONF_ALLOW_SOLAR,
     CONF_CONTROLLED_ENTITY,
     CONF_DEADLINE,
+    CONF_DRAW_KW,
     CONF_EARLIEST,
     CONF_MIN_SEPARATION,
     CONF_MIN_SERVICE,
@@ -55,6 +57,8 @@ class LoadConfig:
     cap: float | None
     min_service_minutes: float
     controlled_entity: str | None
+    allow_solar: bool
+    draw_kw: float | None
 
     @classmethod
     def from_subentry(cls, data: Mapping) -> LoadConfig:
@@ -71,6 +75,8 @@ class LoadConfig:
             cap=float(cap) if cap is not None else None,
             min_service_minutes=float(data.get(CONF_MIN_SERVICE, DEFAULT_MIN_SERVICE)),
             controlled_entity=data.get(CONF_CONTROLLED_ENTITY),
+            allow_solar=bool(data.get(CONF_ALLOW_SOLAR, True)),
+            draw_kw=(float(data[CONF_DRAW_KW]) if data.get(CONF_DRAW_KW) is not None else None),
         )
 
     @property
@@ -78,11 +84,20 @@ class LoadConfig:
         return self.mode is ScheduleMode.INFORMATIONAL
 
 
-def build_load_params(cfg: LoadConfig, now: datetime, target_minutes: float) -> LoadParams:
+def build_load_params(
+    cfg: LoadConfig,
+    now: datetime,
+    target_minutes: float,
+    *,
+    solar_enabled: bool = False,
+    draw_kw: float | None = None,
+) -> LoadParams:
     """Combine static config + a (possibly runtime-overridden) target + ``now``.
 
     ``target_minutes`` is passed explicitly so the caller can substitute the
     live value from the load's ``number`` entity / an external source.
+    ``solar_enabled``/``draw_kw`` are resolved by the coordinator from the hub's
+    solar configuration and the load's own settings.
     """
     window = resolve_window(now, cfg.earliest, cfg.deadline)
     return LoadParams(
@@ -91,6 +106,8 @@ def build_load_params(cfg: LoadConfig, now: datetime, target_minutes: float) -> 
         window=window,
         min_service_minutes=cfg.min_service_minutes,
         cap=cfg.cap,
+        draw_kw=draw_kw,
+        solar_enabled=solar_enabled,
         runs_per_day=cfg.runs_per_day,
         min_separation_minutes=cfg.min_separation_minutes,
     )
