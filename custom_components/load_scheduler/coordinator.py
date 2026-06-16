@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
@@ -31,6 +32,7 @@ from .const import (
     CONF_SOLAR_FORECAST_ENTITY,
     DEFAULT_BASELINE_W,
     DOMAIN,
+    ISSUE_PRICE_UNAVAILABLE,
     UPDATE_INTERVAL_MINUTES,
 )
 from .engine import Period, RunSource
@@ -128,6 +130,22 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
     def load_config(self, subentry_id: str) -> LoadConfig:
         """The static config for a load subentry."""
         return LoadConfig.from_subentry(self.config_entry.subentries[subentry_id].data)
+
+    @callback
+    def _update_price_issue(self, *, has_slots: bool) -> None:
+        """Raise/clear a repair issue reflecting price-source usability."""
+        if has_slots:
+            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_PRICE_UNAVAILABLE)
+        else:
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                ISSUE_PRICE_UNAVAILABLE,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=ISSUE_PRICE_UNAVAILABLE,
+                translation_placeholders={"entity": self._buy_entity},
+            )
 
     @callback
     def async_setup_listeners(self) -> None:
@@ -237,6 +255,7 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
             _LOGGER.warning("Price source unusable: %s", err)
             base_slots = []
 
+        self._update_price_issue(has_slots=bool(base_slots))
         residual = self._excess_by_slot(base_slots) if base_slots else {}
         now = dt_util.now()  # local: windows anchor to wall-clock
         now_utc = dt_util.utcnow()

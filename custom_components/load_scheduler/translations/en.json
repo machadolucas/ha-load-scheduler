@@ -134,5 +134,11 @@
         "name": "Schedule"
       }
     }
+  },
+  "issues": {
+    "price_unavailable": {
+      "title": "Load Scheduler: price forecast unavailable",
+      "description": "The configured price sensor ({entity}) is not providing a usable forecast, so no loads can be scheduled. Check that the sensor is available and exposes today/tomorrow prices in its attributes. Scheduling resumes automatically once it recovers."
+    }
   }
 }

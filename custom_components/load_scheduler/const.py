@@ -92,3 +92,6 @@ SAVE_DELAY = 10  # seconds — debounce runtime writes
 # Events fired when a load's controlled entity is switched on/off.
 EVENT_RUN_STARTED = "load_scheduler_run_started"
 EVENT_RUN_ENDED = "load_scheduler_run_ended"
+
+# Repair issues.
+ISSUE_PRICE_UNAVAILABLE = "price_unavailable"
