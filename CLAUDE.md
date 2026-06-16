@@ -2,6 +2,15 @@
 
 Working notes for AI agents and future-me. Read this before changing code.
 
+**Status (beta):** M0–M7 are complete and tested (engine, price/solar/window
+normalization, coordinator, all entities + calendar, actuation with restart
+catch-up, persistence, reconfigure, validation, solar forecast + allocation +
+real-time divert, statistics baseline, repairs, failsafe, bundled card). 75
+tests pass under `.venv313` (HA needs py3.13, not 3.14). Still planned: kWh/EV
+target mode + dynamic remaining; a bespoke run-history card view. CI workflow
+files are present locally but git-ignored (the push token lacks `workflow`
+scope). See `docs/architecture.md` for the module map.
+
 ## What this is
 
 A Home Assistant custom integration (`load_scheduler`) that schedules flexible
