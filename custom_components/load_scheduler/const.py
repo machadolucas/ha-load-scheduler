@@ -53,7 +53,8 @@ DEFAULT_FEEDBACK_IDLE_W = 50.0
 
 # Hub solar settings.
 CONF_CONSUMPTION_BASELINE_W = "consumption_baseline_w"
-DEFAULT_BASELINE_W = 400  # crude flat baseline; M5 derives it from statistics
+DEFAULT_BASELINE_W = 400  # flat fallback baseline (W)
+CONF_BASELINE_ENTITY = "baseline_entity"  # consumption sensor → hour-of-day profile
 
 # Hub real-time divert settings (M6).
 CONF_NET_ENERGY_ENTITY = "net_energy_entity"  # live net energy; negative = export

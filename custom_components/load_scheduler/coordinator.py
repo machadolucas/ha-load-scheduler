@@ -6,9 +6,11 @@ engine for every load subentry, keyed by ``subentry_id``. Recompute is
 event-driven (price-entity change, a load's target/enable change, a periodic
 safety tick) — there is no polling of an external API.
 
-Solar excess (M4) is folded into each slot from the configured solar forecast(s)
-minus a flat consumption baseline, so the engine values solar slots at the sell
-price. Cross-load allocation (M5) and real-time divert (M6) build on this.
+Solar excess is folded into each slot from the configured solar forecast(s)
+minus a consumption baseline (an hour-of-day profile from statistics when
+available, else a flat value), so the engine values solar slots at the sell
+price. Excess is allocated across loads by priority, and a live divert
+controller dispatches real-time surplus.
 """
 
 from __future__ import annotations
@@ -20,12 +22,17 @@ from datetime import datetime, timedelta
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_time_change,
+)
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
+from . import baseline as baseline_mod
 from . import engine, price_source, solar_source
 from .const import (
+    CONF_BASELINE_ENTITY,
     CONF_BUY_PRICE_ENTITY,
     CONF_CONSUMPTION_BASELINE_W,
     CONF_SELL_PRICE_ENTITY,
@@ -92,6 +99,9 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         self._baseline_kw: float = (
             float(entry.data.get(CONF_CONSUMPTION_BASELINE_W, DEFAULT_BASELINE_W)) / 1000.0
         )
+        self._baseline_entity: str | None = entry.data.get(CONF_BASELINE_ENTITY)
+        # hour-of-day → kW, built from statistics; None until/unless available.
+        self._baseline_profile: dict[int, float] | None = None
         # Per-load runtime state, keyed by subentry_id.
         self.runtime: dict[str, LoadRuntime] = {}
         self._store = RuntimeStore(hass, entry.entry_id)
@@ -157,6 +167,16 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         self.config_entry.async_on_unload(
             async_track_state_change_event(self.hass, watched, self._handle_source_change)
         )
+        # Rebuild the statistics baseline once a day (slow-changing).
+        self.config_entry.async_on_unload(
+            async_track_time_change(
+                self.hass, self._async_daily_baseline, hour=3, minute=30, second=0
+            )
+        )
+
+    @callback
+    def _async_daily_baseline(self, _now) -> None:
+        self.config_entry.async_create_task(self.hass, self.async_refresh_baseline(), "ls_baseline")
 
     @callback
     def _handle_source_change(self, _event) -> None:
@@ -199,8 +219,8 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
     def _excess_by_slot(self, slots: list[engine.Slot]) -> dict[datetime, float]:
         """Predicted solar excess (kWh) per slot start = forecast PV − baseline.
 
-        The flat baseline is a placeholder; a statistics-derived hour-of-day
-        profile is a planned enhancement.
+        The baseline is the hour-of-day profile from statistics when available,
+        else the flat fallback.
         """
         forecasts: list[list[solar_source.SolarPeriod]] = []
         for entity_id in self._solar_entities:
@@ -215,9 +235,62 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
             return {}
         kwh = solar_source.available_kwh_by_slot(solar_source.merge_solar(*forecasts), slots)
         return {
-            s.start: max(0.0, kwh.get(s.start, 0.0) - self._baseline_kw * (s.minutes / 60.0))
+            s.start: max(0.0, kwh.get(s.start, 0.0) - self._baseline_kw_for(s) * (s.minutes / 60.0))
             for s in slots
         }
+
+    def _baseline_kw_for(self, slot: engine.Slot) -> float:
+        """Baseline consumption (kW) for a slot: hour profile, else the flat value."""
+        if self._baseline_profile:
+            hour = dt_util.as_local(slot.start).hour
+            return self._baseline_profile.get(hour, self._baseline_kw)
+        return self._baseline_kw
+
+    async def async_refresh_baseline(self) -> None:
+        """Rebuild the hour-of-day baseline from the consumption sensor's stats.
+
+        Best-effort: silently keeps the flat baseline if the recorder isn't
+        available or the sensor has no statistics yet.
+        """
+        if not self._baseline_entity:
+            return
+        try:
+            from homeassistant.components.recorder import get_instance
+            from homeassistant.components.recorder.statistics import (
+                statistics_during_period,
+            )
+        except ImportError:
+            return
+        end = dt_util.utcnow()
+        start = end - timedelta(days=7)
+        try:
+            stats = await get_instance(self.hass).async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                start,
+                end,
+                {self._baseline_entity},
+                "hour",
+                None,
+                {"mean"},
+            )
+        except Exception as err:  # noqa: BLE001 - recorder may be unavailable
+            _LOGGER.debug("Baseline statistics unavailable: %s", err)
+            return
+        samples: list[tuple[int, float]] = []
+        for row in stats.get(self._baseline_entity, []):
+            mean = row.get("mean")
+            if mean is None:
+                continue
+            ts = row["start"]
+            when = (
+                dt_util.utc_from_timestamp(ts)
+                if isinstance(ts, int | float)
+                else dt_util.as_utc(ts)
+            )
+            samples.append((dt_util.as_local(when).hour, float(mean)))
+        if profile := baseline_mod.build_hourly_profile(samples):
+            self._baseline_profile = profile
 
     def _solar_enabled(self, cfg: LoadConfig) -> bool:
         return cfg.allow_solar and bool(self._solar_entities)

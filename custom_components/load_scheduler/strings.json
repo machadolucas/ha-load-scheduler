@@ -10,6 +10,7 @@
           "sell_price_entity": "Sell-price forecast sensor (optional)",
           "solar_forecast_entity": "Solar-production forecast sensor(s) (optional)",
           "consumption_baseline_w": "Baseline household consumption (W)",
+          "baseline_entity": "Consumption sensor for the baseline profile (optional)",
           "net_energy_entity": "Live net-energy sensor (optional, negative = export)",
           "net_export_threshold": "Export threshold to start diverting (kWh)",
           "live_sell_entity": "Live sell-price sensor (optional)",
@@ -19,7 +20,8 @@
           "buy_price_entity": "A sensor exposing today/tomorrow price slots in its attributes (e.g. Nord Pool, ENTSO-e, or a day-ahead template). Used to find the cheapest run times.",
           "sell_price_entity": "What you earn exporting 1 kWh. Enables buy-vs-sell solar arbitration: running on solar costs the foregone sell price.",
           "solar_forecast_entity": "Per-slot PV forecast sensor(s) (e.g. Solcast 'today' + 'tomorrow', whose 'detailedForecast' is read). Enables valuing slots with solar excess at the sell price.",
-          "consumption_baseline_w": "Always-on house load subtracted from the PV forecast to estimate exportable excess. A flat estimate for now (derived from statistics in a later release).",
+          "consumption_baseline_w": "Flat fallback for the always-on house load subtracted from the PV forecast to estimate exportable excess. Used when no baseline sensor is set or it has no statistics yet.",
+          "baseline_entity": "A house-consumption power sensor (W). Its long-term statistics build an hour-of-day baseline that's subtracted from the PV forecast — more accurate than the flat value, and it needs no high-frequency history.",
           "net_energy_entity": "Enables real-time divert: when this shows live export beyond the threshold (and selling isn't worth it), surplus is dispatched to solar-enabled loads by priority.",
           "live_sell_entity": "When set, divert only runs while the live sell price is below the threshold (i.e. selling the surplus isn't worth more than self-consuming it)."
         }
@@ -33,6 +35,7 @@
           "sell_price_entity": "Sell-price forecast sensor (optional)",
           "solar_forecast_entity": "Solar-production forecast sensor(s) (optional)",
           "consumption_baseline_w": "Baseline household consumption (W)",
+          "baseline_entity": "Consumption sensor for the baseline profile (optional)",
           "net_energy_entity": "Live net-energy sensor (optional, negative = export)",
           "net_export_threshold": "Export threshold to start diverting (kWh)",
           "live_sell_entity": "Live sell-price sensor (optional)",

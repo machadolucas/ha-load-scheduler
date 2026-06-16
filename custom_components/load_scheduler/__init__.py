@@ -44,6 +44,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LoadSchedulerConfigEntry
     """Set up Load Scheduler from the hub config entry."""
     coordinator = LoadSchedulerCoordinator(hass, entry)
     await coordinator.async_load_runtime()
+    await coordinator.async_refresh_baseline()
     coordinator.async_setup_listeners()
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator

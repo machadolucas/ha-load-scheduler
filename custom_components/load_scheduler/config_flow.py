@@ -28,6 +28,7 @@ from homeassistant.helpers import selector
 from . import price_source
 from .const import (
     CONF_ALLOW_SOLAR,
+    CONF_BASELINE_ENTITY,
     CONF_BUY_PRICE_ENTITY,
     CONF_CONSUMPTION_BASELINE_W,
     CONF_CONTROLLED_ENTITY,
@@ -135,6 +136,7 @@ def _hub_schema(defaults: dict) -> vol.Schema:
                     mode=selector.NumberSelectorMode.BOX,
                 )
             ),
+            vol.Optional(CONF_BASELINE_ENTITY, description=suggest(CONF_BASELINE_ENTITY)): _SENSOR,
             vol.Optional(
                 CONF_NET_ENERGY_ENTITY, description=suggest(CONF_NET_ENERGY_ENTITY)
             ): _SENSOR,
