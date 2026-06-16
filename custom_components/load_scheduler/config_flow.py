@@ -33,6 +33,7 @@ from .const import (
     CONF_CONSUMPTION_BASELINE_W,
     CONF_CONTROLLED_ENTITY,
     CONF_DEADLINE,
+    CONF_DELIVERED_ENTITY,
     CONF_DRAW_KW,
     CONF_EARLIEST,
     CONF_FAILSAFE_START,
@@ -54,6 +55,7 @@ from .const import (
     CONF_SELL_THRESHOLD,
     CONF_SOLAR_FORECAST_ENTITY,
     CONF_TARGET_MINUTES,
+    CONF_TARGET_TYPE,
     CONF_TEMP_ENTITY,
     CONF_TEMP_MIN,
     DEFAULT_BASELINE_W,
@@ -64,6 +66,7 @@ from .const import (
     DEFAULT_RUNS_PER_DAY,
     DEFAULT_SELL_THRESHOLD,
     DEFAULT_TARGET_MINUTES,
+    DEFAULT_TARGET_TYPE,
     DEFAULT_TEMP_MIN,
     DOMAIN,
     MODE_INFORMATIONAL,
@@ -73,6 +76,8 @@ from .const import (
     TARGET_MAX,
     TARGET_MIN,
     TARGET_STEP,
+    TARGET_TYPE_KWH,
+    TARGET_TYPE_RUNTIME,
 )
 
 _SENSOR = selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor"))
@@ -185,6 +190,16 @@ def _load_schema(defaults: dict) -> vol.Schema:
                 )
             ),
             vol.Required(
+                CONF_TARGET_TYPE,
+                default=defaults.get(CONF_TARGET_TYPE, DEFAULT_TARGET_TYPE),
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[TARGET_TYPE_RUNTIME, TARGET_TYPE_KWH],
+                    translation_key="target_type",
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Required(
                 CONF_TARGET_MINUTES,
                 default=defaults.get(CONF_TARGET_MINUTES, DEFAULT_TARGET_MINUTES),
             ): _minutes_selector(),
@@ -229,6 +244,9 @@ def _load_schema(defaults: dict) -> vol.Schema:
             vol.Optional(
                 CONF_FAILSAFE_START, description=suggest(CONF_FAILSAFE_START)
             ): selector.TimeSelector(),
+            vol.Optional(
+                CONF_DELIVERED_ENTITY, description=suggest(CONF_DELIVERED_ENTITY)
+            ): _SENSOR,
             vol.Optional(
                 CONF_ALLOW_SOLAR, default=defaults.get(CONF_ALLOW_SOLAR, True)
             ): selector.BooleanSelector(),

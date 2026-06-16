@@ -296,6 +296,31 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
     def _solar_enabled(self, cfg: LoadConfig) -> bool:
         return cfg.allow_solar and bool(self._solar_entities)
 
+    def _delivered_minutes(self, cfg: LoadConfig) -> float:
+        """Runtime already delivered today (minutes) from the delivered sensor.
+
+        Interprets the sensor's unit (h/min/s, or kWh/Wh via ``draw_kw``) so a
+        load that already ran enough this period shrinks/skips its planned run.
+        """
+        if not cfg.delivered_entity:
+            return 0.0
+        state = self.hass.states.get(cfg.delivered_entity)
+        if state is None:
+            return 0.0
+        try:
+            value = float(state.state)
+        except (TypeError, ValueError):
+            return 0.0
+        unit = str(state.attributes.get("unit_of_measurement", "")).lower()
+        if unit in ("h", "hr", "hrs", "hour", "hours"):
+            return value * 60.0
+        if unit in ("s", "sec", "secs", "second", "seconds"):
+            return value / 60.0
+        if unit in ("kwh", "wh"):
+            kwh = value / 1000.0 if unit == "wh" else value
+            return (kwh / cfg.draw_kw * 60.0) if cfg.draw_kw else 0.0
+        return value  # minutes (explicit or assumed)
+
     def _failsafe_periods(self, cfg: LoadConfig, rt: LoadRuntime, now: datetime) -> list[Period]:
         """A fixed-time fallback run used when no price forecast is available."""
         if cfg.failsafe_start is None:
@@ -374,6 +399,7 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
                         cfg,
                         now,
                         rt.target_minutes,
+                        delivered_minutes=self._delivered_minutes(cfg),
                         solar_enabled=solar,
                         draw_kw=cfg.draw_kw,
                     )

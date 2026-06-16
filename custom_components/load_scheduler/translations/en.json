@@ -64,7 +64,8 @@
           "data": {
             "name": "Name",
             "mode": "Scheduling mode",
-            "target_minutes": "Target runtime",
+            "target_type": "Target type",
+            "target_minutes": "Target (minutes or kWh)",
             "earliest": "Earliest start (optional)",
             "deadline": "Deadline (optional)",
             "runs_per_day": "Runs per day (sequential)",
@@ -75,6 +76,7 @@
             "price_cap": "Maximum price (optional, €/kWh)",
             "controlled_entity": "Switch to control (optional)",
             "failsafe_start": "Failsafe start time (optional)",
+            "delivered_entity": "Already-delivered-today sensor (optional)",
             "allow_solar": "Value solar excess for this load",
             "draw_kw": "Load power draw (optional, kW)",
             "priority": "Solar priority",
@@ -85,7 +87,8 @@
           },
           "data_description": {
             "mode": "Non-sequential = the cheapest scattered slots (pausable loads). Sequential = the cheapest contiguous block(s). Informational = compute and display only, never switch anything.",
-            "target_minutes": "How long the load should run, in minutes.",
+            "target_type": "Runtime = minutes of run time. Energy = kWh to deliver at the load's power draw (e.g. EV charging); set the power draw too.",
+            "target_minutes": "The target: minutes for a runtime load, or kWh for an energy load. Adjustable later via the load's number entity.",
             "runs_per_day": "For sequential loads, how many separate blocks to schedule (e.g. run a washing machine twice).",
             "min_service_minutes": "A guaranteed minimum that runs even when prices are above the cap, so the load never starves.",
             "min_run_minutes": "Compressor protection: drop scheduled runs shorter than this.",
@@ -93,6 +96,7 @@
             "price_cap": "Discretionary runtime above the minimum is only scheduled at or below this price.",
             "controlled_entity": "A switch / input_boolean the integration turns on and off with the schedule. Leave empty for informational loads.",
             "failsafe_start": "If the price forecast is ever unavailable, run for the target duration starting at this time so the load still runs.",
+            "delivered_entity": "A sensor reporting how much the load has already run/received today (hours, minutes, or kWh). Subtracted from the target so a load that already ran enough (e.g. on solar) is scheduled for less.",
             "allow_solar": "When the hub has a solar forecast, value slots with predicted excess at the sell price instead of the buy price.",
             "draw_kw": "The load's power, used to value how much of a slot's solar excess it can actually absorb. Without it, any excess counts as fully solar.",
             "priority": "When several loads compete for the same solar surplus, higher-priority loads claim it first.",
@@ -109,6 +113,12 @@
         "non_sequential": "Non-sequential (scattered, pausable)",
         "sequential": "Sequential (contiguous block)",
         "informational": "Informational (display only)"
+      }
+    },
+    "target_type": {
+      "options": {
+        "runtime": "Runtime (minutes)",
+        "kwh": "Energy (kWh)"
       }
     }
   },

@@ -28,7 +28,14 @@ DEFAULT_NAME = "Load Scheduler"
 SUBENTRY_TYPE_LOAD = "load"
 
 CONF_MODE = "mode"
+CONF_TARGET_TYPE = "target_type"
 CONF_TARGET_MINUTES = "target_minutes"
+CONF_DELIVERED_ENTITY = "delivered_entity"
+
+# Target types.
+TARGET_TYPE_RUNTIME = "runtime"  # the target is a run time (minutes)
+TARGET_TYPE_KWH = "kwh"  # the target is energy to deliver (kWh) at draw_kw
+DEFAULT_TARGET_TYPE = TARGET_TYPE_RUNTIME
 CONF_EARLIEST = "earliest"
 CONF_DEADLINE = "deadline"
 CONF_RUNS_PER_DAY = "runs_per_day"
@@ -85,6 +92,9 @@ DEFAULT_BOOST_MINUTES = 60  # used by the boost button when target is 0
 TARGET_MIN = 0
 TARGET_MAX = 1440  # 24 h
 TARGET_STEP = 15
+# Bounds when the target is shown in kWh (EV charging etc.).
+TARGET_MAX_KWH = 100
+TARGET_STEP_KWH = 0.5
 
 # How often the coordinator recomputes as a safety net (event-driven otherwise).
 UPDATE_INTERVAL_MINUTES = 5

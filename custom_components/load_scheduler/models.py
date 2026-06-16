@@ -15,6 +15,7 @@ from .const import (
     CONF_ALLOW_SOLAR,
     CONF_CONTROLLED_ENTITY,
     CONF_DEADLINE,
+    CONF_DELIVERED_ENTITY,
     CONF_DRAW_KW,
     CONF_EARLIEST,
     CONF_FAILSAFE_START,
@@ -30,6 +31,7 @@ from .const import (
     CONF_PRIORITY,
     CONF_RUNS_PER_DAY,
     CONF_TARGET_MINUTES,
+    CONF_TARGET_TYPE,
     CONF_TEMP_ENTITY,
     CONF_TEMP_MIN,
     DEFAULT_FEEDBACK_IDLE_W,
@@ -38,6 +40,7 @@ from .const import (
     DEFAULT_PRIORITY,
     DEFAULT_RUNS_PER_DAY,
     DEFAULT_TARGET_MINUTES,
+    DEFAULT_TARGET_TYPE,
     DEFAULT_TEMP_MIN,
     MODE_NON_SEQUENTIAL,
 )
@@ -78,6 +81,8 @@ class LoadConfig:
     feedback_entity: str | None
     feedback_idle_w: float
     failsafe_start: time | None
+    target_type: str
+    delivered_entity: str | None
 
     @classmethod
     def from_subentry(cls, data: Mapping) -> LoadConfig:
@@ -104,6 +109,8 @@ class LoadConfig:
             feedback_entity=data.get(CONF_FEEDBACK_ENTITY),
             feedback_idle_w=float(data.get(CONF_FEEDBACK_IDLE_W, DEFAULT_FEEDBACK_IDLE_W)),
             failsafe_start=_parse_time(data.get(CONF_FAILSAFE_START)),
+            target_type=data.get(CONF_TARGET_TYPE, DEFAULT_TARGET_TYPE),
+            delivered_entity=data.get(CONF_DELIVERED_ENTITY),
         )
 
     @property
@@ -116,22 +123,24 @@ def build_load_params(
     now: datetime,
     target_minutes: float,
     *,
+    delivered_minutes: float = 0.0,
     solar_enabled: bool = False,
     draw_kw: float | None = None,
 ) -> LoadParams:
     """Combine static config + a (possibly runtime-overridden) target + ``now``.
 
-    ``target_minutes`` is passed explicitly so the caller can substitute the
-    live value from the load's ``number`` entity / an external source.
-    ``solar_enabled``/``draw_kw`` are resolved by the coordinator from the hub's
-    solar configuration and the load's own settings.
+    ``target_minutes`` is the live target in minutes (kWh-mode loads are converted
+    at the ``number`` entity, so the engine always works in minutes).
+    ``delivered_minutes`` — runtime already delivered today — is subtracted from
+    both the target and the minimum-service floor (dynamic remaining), so a load
+    that already ran enough (e.g. on solar) shrinks or skips its planned run.
     """
     window = resolve_window(now, cfg.earliest, cfg.deadline)
     return LoadParams(
         mode=cfg.mode,
-        target_minutes=target_minutes,
+        target_minutes=max(0.0, target_minutes - delivered_minutes),
         window=window,
-        min_service_minutes=cfg.min_service_minutes,
+        min_service_minutes=max(0.0, cfg.min_service_minutes - delivered_minutes),
         cap=cfg.cap,
         draw_kw=draw_kw,
         solar_enabled=solar_enabled,
