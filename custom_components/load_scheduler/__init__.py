@@ -8,14 +8,36 @@ heating, …) carries that load's schedule and owns its device + entities.
 from __future__ import annotations
 
 import logging
+import pathlib
 
 from homeassistant.core import HomeAssistant
 
 from .actuation import LoadActuator
-from .const import PLATFORMS
+from .const import DOMAIN, PLATFORMS
 from .coordinator import LoadSchedulerConfigEntry, LoadSchedulerCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+_CARD_URL = f"/{DOMAIN}/load-scheduler-card.js"
+
+
+async def _async_register_frontend(hass: HomeAssistant) -> None:
+    """Register the bundled Lovelace card as a resource (best-effort).
+
+    Skipped silently when the frontend/http components aren't available (e.g. in
+    the test harness); the integration works without the card.
+    """
+    if hass.data.get(f"{DOMAIN}_card"):
+        return
+    try:
+        from homeassistant.components.frontend import add_extra_js_url
+        from homeassistant.components.http import StaticPathConfig
+
+        path = str(pathlib.Path(__file__).parent / "frontend" / "load-scheduler-card.js")
+        await hass.http.async_register_static_paths([StaticPathConfig(_CARD_URL, path, True)])
+        add_extra_js_url(hass, _CARD_URL)
+        hass.data[f"{DOMAIN}_card"] = True
+    except Exception as err:  # noqa: BLE001 - best-effort; core may be partial
+        _LOGGER.debug("Load Scheduler card not registered: %s", err)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: LoadSchedulerConfigEntry) -> bool:
@@ -25,6 +47,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: LoadSchedulerConfigEntry
     coordinator.async_setup_listeners()
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
+
+    await _async_register_frontend(hass)
 
     # Actuation: drive controlled entities + reconcile on startup (catch-up).
     actuator = LoadActuator(hass, coordinator)
