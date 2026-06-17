@@ -41,6 +41,10 @@ class LoadScheduleSensor(LoadSchedulerEntity, SensorEntity):
     """State = next run start; attributes = the full upcoming plan."""
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
+    # The bulky, slow-to-change attributes don't belong in the recorder: the
+    # state (next-run timestamp) keeps its history, but the upcoming-periods
+    # list and the static config summary would bloat every recorded row.
+    _unrecorded_attributes = frozenset({"periods", "config"})
 
     def __init__(self, coordinator, subentry_id, subentry) -> None:
         super().__init__(coordinator, subentry_id, subentry, "schedule")
@@ -62,6 +66,7 @@ class LoadScheduleSensor(LoadSchedulerEntity, SensorEntity):
         now = dt_util.utcnow()
         active = plan.active_period(now)
         controlled_on, heating = self._actual_state()
+        cfg = self.coordinator.load_config(self._subentry_id)
         return {
             "periods": [
                 {
@@ -82,6 +87,39 @@ class LoadScheduleSensor(LoadSchedulerEntity, SensorEntity):
             "target_minutes": plan.target_minutes,
             "enabled": plan.enabled,
             "status": plan.error or ("disabled" if not plan.enabled else "ok"),
+            # Rationale the diagnostic card renders: how the target was reduced by
+            # what already ran today, what got scheduled, and the rough cost.
+            "delivered_minutes": round(plan.delivered_minutes, 1),
+            "remaining_minutes": round(plan.remaining_minutes, 1),
+            "min_service_remaining": round(plan.min_service_remaining, 1),
+            "scheduled_minutes": round(plan.scheduled_minutes, 1),
+            "est_cost": round(plan.est_cost, 4),
+            "solar_enabled": plan.solar_enabled,
+            "boost_until": (
+                dt_util.as_local(plan.boost_until).isoformat() if plan.boost_until else None
+            ),
+            # Static configuration summary (the load's "type" + its wiring), so
+            # the card can explain the rules without a second data source. Flat
+            # and low-churn; excluded from the recorder via _unrecorded_attributes.
+            "config": {
+                "mode": str(cfg.mode),
+                "target_type": cfg.target_type,
+                "priority": cfg.priority,
+                "cap": cfg.cap,
+                "min_service_minutes": cfg.min_service_minutes,
+                "runs_per_day": cfg.runs_per_day,
+                "horizon_hours": cfg.horizon_hours,
+                "earliest": cfg.earliest.isoformat() if cfg.earliest else None,
+                "deadline": cfg.deadline.isoformat() if cfg.deadline else None,
+                "allow_solar": cfg.allow_solar,
+                "coexist": cfg.coexist,
+                "draw_kw": cfg.draw_kw,
+                "temp_min": cfg.temp_min if cfg.temp_entity else None,
+                "controlled_entity": cfg.controlled_entity,
+                "feedback_entity": cfg.feedback_entity,
+                "temp_entity": cfg.temp_entity,
+                "delivered_entity": cfg.delivered_entity,
+            },
         }
 
     def _actual_state(self) -> tuple[bool | None, bool | None]:

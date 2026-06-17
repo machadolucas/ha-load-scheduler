@@ -76,3 +76,77 @@ async def test_schedule_sensor_active_and_heating(hass: HomeAssistant) -> None:
     hass.states.async_set("sensor.heater_power", "1500", {"unit_of_measurement": "W"})
     await hass.async_block_till_done()
     assert hass.states.get(sid).attributes["heating"] is True
+
+
+async def test_schedule_sensor_rationale_attributes(hass: HomeAssistant) -> None:
+    """The diagnostic card's data: targets math + a static config summary."""
+    async_mock_service(hass, "homeassistant", "turn_on")
+    async_mock_service(hass, "homeassistant", "turn_off")
+    hass.states.async_set("sensor.prices", "ok", _prices())
+    hass.states.async_set("switch.heater", "off")
+    hass.states.async_set("sensor.heater_power", "0", {"unit_of_measurement": "W"})
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={"name": "Hub", "buy_price_entity": "sensor.prices"},
+        unique_id="sensor.prices",
+        subentries_data=[
+            ConfigSubentryData(
+                subentry_type=SUBENTRY_TYPE_LOAD,
+                title="Heater",
+                unique_id=None,
+                data={
+                    "name": "Heater",
+                    "mode": "non_sequential",
+                    "target_minutes": 60,
+                    "controlled_entity": "switch.heater",
+                    "feedback_entity": "sensor.heater_power",
+                    "feedback_idle_w": 50,
+                },
+            )
+        ],
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    subentry_id = next(iter(entry.subentries))
+    sid = er.async_get(hass).async_get_entity_id("sensor", DOMAIN, f"{subentry_id}_schedule")
+    attrs = hass.states.get(sid).attributes
+
+    # Rationale: nothing delivered yet, so the full target remains and is scheduled.
+    assert attrs["delivered_minutes"] == 0
+    assert attrs["remaining_minutes"] == 60
+    assert attrs["min_service_remaining"] == 0
+    assert attrs["scheduled_minutes"] == 60
+    assert attrs["est_cost"] == 0  # no draw_kw configured
+    assert attrs["solar_enabled"] is False  # hub has no solar source
+    assert attrs["boost_until"] is None
+
+    # Static config summary (the load's type + its wiring).
+    cfg = attrs["config"]
+    assert cfg["mode"] == "non_sequential"
+    assert cfg["priority"] == 0
+    assert cfg["runs_per_day"] == 1
+    assert cfg["target_type"] == "runtime"
+    assert cfg["allow_solar"] is True
+    assert cfg["cap"] is None
+    assert cfg["controlled_entity"] == "switch.heater"
+    assert cfg["feedback_entity"] == "sensor.heater_power"
+
+    # Delivered-today shrinks the remaining target (dynamic remaining). Pin the
+    # measurement timestamp so the throttled recorder refresh doesn't overwrite.
+    coordinator = entry.runtime_data
+    coordinator._delivered_today[subentry_id] = 20.0
+    coordinator._delivered_at = dt_util.utcnow()
+    await coordinator.async_request_refresh()
+    await hass.async_block_till_done()
+    attrs = hass.states.get(sid).attributes
+    assert attrs["delivered_minutes"] == 20
+    assert attrs["remaining_minutes"] == 40
+
+
+def test_schedule_sensor_excludes_bulky_attrs_from_recorder() -> None:
+    """The big, slow-changing attributes stay out of the recorder."""
+    from custom_components.load_scheduler.sensor import LoadScheduleSensor
+
+    assert {"periods", "config"} <= LoadScheduleSensor._unrecorded_attributes

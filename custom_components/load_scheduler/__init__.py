@@ -7,6 +7,7 @@ heating, …) carries that load's schedule and owns its device + entities.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import pathlib
 
@@ -17,11 +18,24 @@ from .const import DOMAIN, PLATFORMS
 from .coordinator import LoadSchedulerConfigEntry, LoadSchedulerCoordinator
 
 _LOGGER = logging.getLogger(__name__)
-_CARD_URL = f"/{DOMAIN}/load-scheduler-card.js"
+_CARD_FILE = "load-scheduler-card.js"
+_CARD_URL = f"/{DOMAIN}/{_CARD_FILE}"
+
+
+def _card_version(path: pathlib.Path) -> str:
+    """A short content hash of the card file, for cache-busting its URL."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:8]
 
 
 async def _async_register_frontend(hass: HomeAssistant) -> None:
     """Register the bundled Lovelace card as a resource (best-effort).
+
+    The file is served with long-lived cache headers (``cache_headers=True``), so
+    the injected URL carries a ``?v=<content-hash>`` query: a fixed URL would let
+    browsers, the PWA service worker and the companion-app WebView keep serving a
+    stale card for weeks after an update, whereas a hash that changes with the
+    file forces every client to refetch. The static handler ignores the query, so
+    the bare path is what's registered.
 
     Skipped silently when the frontend/http components aren't available (e.g. in
     the test harness); the integration works without the card.
@@ -32,9 +46,10 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
         from homeassistant.components.frontend import add_extra_js_url
         from homeassistant.components.http import StaticPathConfig
 
-        path = str(pathlib.Path(__file__).parent / "frontend" / "load-scheduler-card.js")
-        await hass.http.async_register_static_paths([StaticPathConfig(_CARD_URL, path, True)])
-        add_extra_js_url(hass, _CARD_URL)
+        path = pathlib.Path(__file__).parent / "frontend" / _CARD_FILE
+        version = await hass.async_add_executor_job(_card_version, path)
+        await hass.http.async_register_static_paths([StaticPathConfig(_CARD_URL, str(path), True)])
+        add_extra_js_url(hass, f"{_CARD_URL}?v={version}")
         hass.data[f"{DOMAIN}_card"] = True
     except Exception as err:  # noqa: BLE001 - best-effort; core may be partial
         _LOGGER.debug("Load Scheduler card not registered: %s", err)

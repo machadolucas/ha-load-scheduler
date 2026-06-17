@@ -44,7 +44,7 @@ calendar-bus + solar-divert automations on the author's home server (the
 | `config_flow.py` | Hub flow + per-load subentry wizard; both reconfigurable | yes |
 | `binary_sensor`/`sensor`/`number`/`switch`/`button`/`calendar` | Entities | yes |
 | `diagnostics.py`, `repairs` (strings) | Support | yes |
-| `frontend/load-scheduler-card.js` | Bundled vanilla-JS Lovelace card | — |
+| `frontend/load-scheduler-card.js` | Two bundled vanilla-JS Lovelace cards (compact + diagnostic) + their `ha-form` UI editors | — |
 
 ## The engine contract (read before touching `engine.py`)
 
@@ -103,6 +103,13 @@ uv pip install --python .venv313/bin/python -r requirements_test.txt ruff
   fixture source).
 - Don't commit secrets; config lives in the config entry and runtime state in
   `.storage/` (both in HA backups).
+- The `sensor.<load>_schedule` carries the diagnostic card's rationale:
+  `LoadPlan` captures the planning math (`delivered_minutes`, `remaining_minutes`,
+  `min_service_remaining`, `boost_until`, `solar_enabled`, `scheduled_minutes`,
+  `est_cost`) and the sensor adds a flat static `config` summary. The bulky
+  `periods`/`config` attrs are kept out of the recorder (`_unrecorded_attributes`).
+- The bundled card URL is registered with a `?v=<content-hash>` cache-buster
+  (`__init__.py`); a fixed URL + `cache_headers=True` served stale JS for weeks.
 
 ## Branding / icon
 

@@ -107,6 +107,15 @@ class LoadPlan:
     target_minutes: float = 0.0
     enabled: bool = True
     error: str | None = None
+    # Rationale the coordinator computes while planning (surfaced by the
+    # schedule sensor for the diagnostic card; otherwise discarded).
+    delivered_minutes: float = 0.0  # runtime already delivered today
+    remaining_minutes: float = 0.0  # max(0, target - delivered): what was planned for
+    min_service_remaining: float = 0.0  # max(0, min_service - delivered)
+    boost_until: datetime | None = None  # active boost end (UTC), else None
+    solar_enabled: bool = False  # competed for solar excess this tick
+    scheduled_minutes: float = 0.0  # sum of the planned periods' minutes
+    est_cost: float = 0.0  # rough run cost (€) when the load's draw is known
 
     def active_period(self, when: datetime) -> Period | None:
         """The period containing ``when`` (UTC), if any."""
@@ -528,9 +537,19 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         for subentry_id, subentry in sorted(self.config_entry.subentries.items(), key=order_key):
             cfg = LoadConfig.from_subentry(subentry.data)
             rt = self.runtime[subentry_id]
-            plan = LoadPlan(target_minutes=rt.target_minutes, enabled=rt.enabled)
-            periods: list[Period] = []
             solar = self._solar_enabled(cfg)
+            # Measure delivered-today once and reuse it for both the plan math
+            # and the rationale (it's what shrinks the target / min-service floor).
+            delivered = self._delivered_minutes(cfg, subentry_id)
+            plan = LoadPlan(
+                target_minutes=rt.target_minutes,
+                enabled=rt.enabled,
+                delivered_minutes=delivered,
+                remaining_minutes=max(0.0, rt.target_minutes - delivered),
+                min_service_remaining=max(0.0, cfg.min_service_minutes - delivered),
+                solar_enabled=solar,
+            )
+            periods: list[Period] = []
             if rt.enabled:
                 if base_slots:
                     slots = [
@@ -547,7 +566,7 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
                         cfg,
                         now,
                         rt.target_minutes,
-                        delivered_minutes=self._delivered_minutes(cfg, subentry_id),
+                        delivered_minutes=delivered,
                         solar_enabled=solar,
                         draw_kw=cfg.draw_kw,
                     )
@@ -563,7 +582,11 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
                 boost = Period(now_utc, rt.boost_until, RunSource.GRID, 0.0)
                 periods = engine.merge_periods([*periods, boost])
                 plan.error = None
+                plan.boost_until = rt.boost_until
             plan.periods = periods
+            plan.scheduled_minutes = sum(p.minutes for p in periods)
+            if cfg.draw_kw:
+                plan.est_cost = sum(p.minutes / 60.0 * cfg.draw_kw * p.avg_cost for p in periods)
             plans[subentry_id] = plan
         return plans
 

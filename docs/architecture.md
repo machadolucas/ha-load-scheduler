@@ -46,7 +46,7 @@ solar entity ─┘ solar_source + baseline → excess ───┤
 | `config_flow.py` | Hub flow + per-load subentry wizard (+ reconfigure) | yes |
 | `binary_sensor/sensor/number/switch/button/calendar` | Entities | yes |
 | `diagnostics.py`, `repairs.py`(strings) | Support | yes |
-| `frontend/` | Bundled Lovelace card | — |
+| `frontend/` | Two bundled Lovelace cards (compact + diagnostic) + `ha-form` editors | — |
 
 ## Key contracts
 
@@ -82,6 +82,12 @@ solar entity ─┘ solar_source + baseline → excess ───┤
   the recorder: the feedback element's (or controlled entity's) on-time since
   local midnight (`async_refresh_delivered`, throttled ~2 min). It counts heating
   regardless of who started it and resets daily, so no external sensor is needed.
+- **Schedule rationale** — the per-load `LoadPlan` also captures the planning
+  math the coordinator would otherwise discard (`delivered_minutes`,
+  `remaining_minutes`, `min_service_remaining`, `boost_until`, `solar_enabled`,
+  `scheduled_minutes`, `est_cost`); `sensor.<load>_schedule` surfaces these plus a
+  flat static `config` summary for the diagnostic card. The bulky `periods` and
+  `config` attributes are excluded from the recorder (`_unrecorded_attributes`).
 - **Multi-day horizon** — a load with `horizon_hours` searches `now → now+N h`
   instead of a daily window, so the engine can defer an expensive day to a
   cheaper next one. The coordinator's `_price_slots` appends an optional

@@ -96,5 +96,8 @@ async def test_boost_button_forces_run_now(hass: HomeAssistant) -> None:
     await hass.async_block_till_done()
 
     assert any(c.data.get("entity_id") == "input_boolean.heater" for c in on)
-    # The schedule now reports a running period (the boost).
-    assert hass.states.get(sensor_id).attributes["running"] is True
+    # The schedule now reports a running period (the boost) and surfaces the
+    # boost end time for the diagnostic card.
+    s_attrs = hass.states.get(sensor_id).attributes
+    assert s_attrs["running"] is True
+    assert s_attrs["boost_until"] is not None
