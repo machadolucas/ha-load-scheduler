@@ -76,11 +76,11 @@ solar entity ─┘ solar_source + baseline → excess ───┤
   *turn-on* (both live and predicted must show export) — the interval-aware
   "don't start a run we won't still be exporting for" debounce for 15-min net
   metering. A fixed dwell prevents thrash; an explicit stop (manual off / boost
-  cancel) backs off so divert can't immediately re-grab the load. A load is only
-  judged **satisfied** (running but element idle, e.g. a full tank) after a
-  settle window, so a just-switched-on load isn't misread as idle and flicked
-  back off; a satisfied load is then parked out of the divert pool for a back-off
-  so the surplus moves to a lower-priority load instead of pulsing its relay.
+  cancel) backs off so divert can't immediately re-grab the load. A diverted load
+  that is on but idle (element satisfied, e.g. a full tank) is **left powered**,
+  not switched off: it draws nothing, so the live export still flows to the other
+  loads, and it resumes drawing on its own thermostat (shed last, as the highest
+  priority). Cycling it off/on would only flicker the relay for no gain.
 - **Delivered today** (dynamic remaining) — subtracted from the target and the
   min-service floor. With no `delivered_entity` the coordinator measures it from
   the recorder: the feedback element's (or controlled entity's) on-time since
