@@ -52,6 +52,8 @@ from .const import (
     DEFAULT_NET_EXPORT_THRESHOLD,
     DEFAULT_SELL_THRESHOLD,
     DIVERT_MIN_DWELL_S,
+    DIVERT_SATISFIED_BACKOFF_S,
+    DIVERT_SETTLE_S,
     EVENT_RUN_ENDED,
     EVENT_RUN_STARTED,
     MANUAL_OVERRIDE_GRACE_S,
@@ -89,6 +91,9 @@ class LoadActuator:
 
         self._diverted: set[str] = set()
         self._last_divert_change: datetime | None = None
+        # Loads parked out of the divert pool because they're satisfied (full),
+        # keyed by subentry_id → the UTC time the back-off expires.
+        self._satisfied_until: dict[str, datetime] = {}
         self._override_until: dict[str, datetime] = {}
         self._last_command: dict[str, tuple[bool, datetime]] = {}
         # Loads the integration currently holds ON (a run it started). Used so a
@@ -208,14 +213,26 @@ class LoadActuator:
             return False
         if self._override_active(sid):
             return False
+        backoff = self._satisfied_until.get(sid)
+        if backoff is not None and dt_util.utcnow() < backoff:
+            return False
         return not self._is_satisfied(cfg)
 
     def _is_satisfied(self, cfg: LoadConfig) -> bool:
-        """A load running but with its element idle (e.g. a full hot-water tank)."""
+        """A load running but with its element idle (e.g. a full hot-water tank).
+
+        Only judged after the load has been on for ``DIVERT_SETTLE_S`` — long
+        enough for the element to actually start drawing (and the power sensor to
+        report it). Without the settle window a load that was *just* switched on
+        reads as idle and gets switched straight back off, flickering the relay
+        every divert tick.
+        """
         if not cfg.feedback_entity:
             return False
         controlled = self._hass.states.get(cfg.controlled_entity)
         if controlled is None or controlled.state != "on":
+            return False
+        if (dt_util.utcnow() - controlled.last_changed).total_seconds() < DIVERT_SETTLE_S:
             return False
         fb = self._hass.states.get(cfg.feedback_entity)
         if fb is None:
@@ -247,14 +264,20 @@ class LoadActuator:
             pred = _as_float(self._hass.states.get(self._predicted_net_entity))
             predicted_ok = pred is not None and pred < -self._net_export_threshold
 
-        # Drop any diverted loads that are no longer eligible (disabled, satisfied…).
-        self._diverted = {
-            sid
-            for sid in self._diverted
-            if self._eligible_for_divert(sid, self._coordinator.load_config(sid))
-        }
-
         now = dt_util.utcnow()
+        # Drop any diverted loads that are no longer eligible (disabled, satisfied…).
+        # A load found satisfied (full tank, element idle) is parked for a back-off
+        # so the surplus is reallocated to a lower-priority load instead of pulsing
+        # this one on/off every dwell.
+        kept: set[str] = set()
+        for sid in self._diverted:
+            cfg = self._coordinator.load_config(sid)
+            if self._is_satisfied(cfg):
+                self._satisfied_until[sid] = now + timedelta(seconds=DIVERT_SATISFIED_BACKOFF_S)
+            if self._eligible_for_divert(sid, cfg):
+                kept.add(sid)
+        self._diverted = kept
+
         if (
             self._last_divert_change is not None
             and (now - self._last_divert_change).total_seconds() < DIVERT_MIN_DWELL_S

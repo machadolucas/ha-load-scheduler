@@ -12,7 +12,11 @@ from pytest_homeassistant_custom_component.common import (
     async_mock_service,
 )
 
-from custom_components.load_scheduler.const import DOMAIN, SUBENTRY_TYPE_LOAD
+from custom_components.load_scheduler.const import (
+    DIVERT_SETTLE_S,
+    DOMAIN,
+    SUBENTRY_TYPE_LOAD,
+)
 
 
 def _price_attrs(cheap: tuple[int, ...], n: int = 24) -> dict:
@@ -132,3 +136,65 @@ async def test_manual_override_suppresses_control(hass: HomeAssistant) -> None:
     await hass.async_block_till_done()
 
     assert on == []
+
+
+async def test_divert_does_not_flicker_just_switched_on_load(hass: HomeAssistant) -> None:
+    """A load just switched on (element not drawing yet, or a full tank) must not
+    be read as 'satisfied' and flicked straight back off — the relay-flicker
+    regression: the satisfied check only applies after a settle window."""
+    on = async_mock_service(hass, "homeassistant", "turn_on")
+    off = async_mock_service(hass, "homeassistant", "turn_off")
+    hass.states.async_set("sensor.net", "-0.5")  # exporting
+    hass.states.async_set("sensor.heater_power", "0")  # element idle so far
+    await _setup(
+        hass,
+        {"net_energy_entity": "sensor.net", "net_export_threshold": 0.1},
+        {
+            "name": "Heater",
+            "mode": "non_sequential",
+            "target_minutes": 15,
+            "controlled_entity": "input_boolean.heater",
+            "feedback_entity": "sensor.heater_power",
+            "feedback_idle_w": 50,
+            "allow_solar": True,
+        },
+        controlled="input_boolean.heater",
+        state="off",
+    )
+    assert any(c.data.get("entity_id") == "input_boolean.heater" for c in on)
+
+    # The switch reports on; power is still 0 (just switched / full tank). Within
+    # the settle window the actuator must NOT switch it back off.
+    off.clear()
+    hass.states.async_set("input_boolean.heater", "on")
+    await hass.async_block_till_done()
+    assert not any(c.data.get("entity_id") == "input_boolean.heater" for c in off)
+
+
+async def test_divert_drops_satisfied_load_after_settle(hass: HomeAssistant, freezer) -> None:
+    """Past the settle window, a diverted load whose element stays idle (full
+    tank) is switched off so the surplus can be reallocated."""
+    async_mock_service(hass, "homeassistant", "turn_on")
+    off = async_mock_service(hass, "homeassistant", "turn_off")
+    hass.states.async_set("sensor.net", "-0.5")  # exporting
+    hass.states.async_set("sensor.heater_power", "0")  # element idle (full)
+    await _setup(
+        hass,
+        {"net_energy_entity": "sensor.net", "net_export_threshold": 0.1},
+        {
+            "name": "Heater",
+            "mode": "non_sequential",
+            "target_minutes": 15,
+            "controlled_entity": "input_boolean.heater",
+            "feedback_entity": "sensor.heater_power",
+            "feedback_idle_w": 50,
+            "allow_solar": True,
+        },
+        controlled="input_boolean.heater",
+        state="on",  # already running on divert
+    )
+    off.clear()
+    freezer.tick(timedelta(seconds=DIVERT_SETTLE_S + 5))
+    hass.states.async_set("sensor.net", "-0.6")  # re-evaluate divert
+    await hass.async_block_till_done()
+    assert any(c.data.get("entity_id") == "input_boolean.heater" for c in off)

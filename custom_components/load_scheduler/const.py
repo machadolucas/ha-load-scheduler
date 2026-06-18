@@ -94,6 +94,15 @@ DEFAULT_SELL_THRESHOLD = 0.05
 # Real-time control timing.
 MANUAL_OVERRIDE_GRACE_S = 600  # back off this long after a foreign (manual) change
 DIVERT_MIN_DWELL_S = 120  # min time before flipping a divert decision (anti-thrash)
+# A diverted load is only judged "satisfied" (element idle) after it has been on
+# this long — long enough for the element to actually start drawing and the power
+# sensor to report it. Without this a just-switched-on load reads as idle and is
+# flicked straight back off every divert tick (relay flicker).
+DIVERT_SETTLE_S = 90
+# Once a load is found satisfied (e.g. a full hot-water tank), park it out of the
+# divert pool this long so the surplus goes to a lower-priority load instead of
+# pulsing this one on/off every dwell. Re-tested afterwards (the tank may cool).
+DIVERT_SATISFIED_BACKOFF_S = 900
 
 # Schedule modes (string values match engine.ScheduleMode).
 MODE_NON_SEQUENTIAL = "non_sequential"
