@@ -108,8 +108,12 @@ uv pip install --python .venv313/bin/python -r requirements_test.txt ruff
   `min_service_remaining`, `boost_until`, `solar_enabled`, `scheduled_minutes`,
   `est_cost`) and the sensor adds a flat static `config` summary. The bulky
   `periods`/`config` attrs are kept out of the recorder (`_unrecorded_attributes`).
-- The bundled card URL is registered with a `?v=<content-hash>` cache-buster
-  (`__init__.py`); a fixed URL + `cache_headers=True` served stale JS for weeks.
+- The bundled card is registered in the Lovelace **resource registry** (like
+  HACS, `__init__.py` `_async_register_resource`), not via `add_extra_js_url`: an
+  injected `<script>` is dropped when a CDN/service-worker serves a stale app
+  shell (card vanishes until hard refresh), whereas the registry is fetched at
+  runtime. URL carries a `?v=<content-hash>` cache-buster; `add_extra_js_url` is
+  the YAML-resource-mode fallback.
 
 ## Branding / icon
 

@@ -109,12 +109,13 @@ those binary sensors are recorded automatically.
 
 - Both cards are plain JavaScript (no build step) bundled in one file, served
   from the integration at `/load_scheduler/load-scheduler-card.js`.
-- The integration injects that URL with a `?v=<content-hash>` cache-buster, so an
-  updated card is picked up automatically (the hash changes with the file). If
-  you still see a stale card on a device after an update, hard-refresh once — or,
-  in the Companion app, **Settings → Companion App → Troubleshooting → Reset
-  frontend cache**. Also check **Settings → Dashboards → Resources** and remove
-  any old manual entry for this card: a duplicate resource can load a different
-  version on different devices.
-- If you run Lovelace in YAML (storage-less) mode and resources aren't
-  auto-registered, add the URL as a `module` resource manually.
+- The integration registers that file in the **Lovelace resource registry** (the
+  same mechanism HACS uses), with a `?v=<content-hash>` cache-buster so an updated
+  card is picked up automatically. The registry is fetched by the frontend at
+  runtime, so the card survives a stale cached app shell (a CDN edge or the
+  service worker serving old index HTML) — the case where `add_extra_js_url`
+  would silently drop the card and you'd see "Custom element doesn't exist". You
+  can see the entry under **Settings → Dashboards → Resources**.
+- If you run Lovelace in **YAML resource mode** (the registry can't be edited
+  programmatically), the integration falls back to injecting the script directly;
+  add the URL as a `module` resource manually if needed.
