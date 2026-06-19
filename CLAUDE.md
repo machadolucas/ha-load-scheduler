@@ -38,6 +38,7 @@ calendar-bus + solar-divert automations on the author's home server (the
 | `windows.py` | DST-safe window + next-time resolution | no |
 | `baseline.py` | Hour-of-day consumption profile from samples | no |
 | `models.py` | Subentry config → `LoadConfig` → `LoadParams` (target conversion, dynamic remaining) | no |
+| `rationale.py` | **Pure** decision facts (skip reason, cap-qualifying slots, solar coverage) the diagnostic card narrates | no |
 | `coordinator.py` | Read sources, allocate solar by priority, run engine per load, statistics baseline, repairs, failsafe | yes |
 | `actuation.py` | Resolve desired state + drive controlled entities, real-time divert, restart catch-up | yes |
 | `persistence.py` | `Store` for runtime (target / enabled / boost) | yes |
@@ -106,8 +107,11 @@ uv pip install --python .venv313/bin/python -r requirements_test.txt ruff
 - The `sensor.<load>_schedule` carries the diagnostic card's rationale:
   `LoadPlan` captures the planning math (`delivered_minutes`, `remaining_minutes`,
   `min_service_remaining`, `boost_until`, `solar_enabled`, `scheduled_minutes`,
-  `est_cost`) and the sensor adds a flat static `config` summary. The bulky
-  `periods`/`config` attrs are kept out of the recorder (`_unrecorded_attributes`).
+  `est_cost`) and the sensor adds a flat static `config` summary plus a
+  `rationale` dict (from `rationale.py` — skip reason, cap-qualifying slots,
+  solar coverage) that the diagnostic card turns into plain-English prose. The
+  bulky `periods`/`config`/`rationale` attrs are kept out of the recorder
+  (`_unrecorded_attributes`).
 - The bundled card is registered in the Lovelace **resource registry** (like
   HACS, `__init__.py` `_async_register_resource`), not via `add_extra_js_url`: an
   injected `<script>` is dropped when a CDN/service-worker serves a stale app

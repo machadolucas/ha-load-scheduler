@@ -1,9 +1,14 @@
 /*
  * Load Scheduler cards — two dependency-free Lovelace cards in one bundle.
  *
- * 1. `custom:load-scheduler-card` — a very compact "next run" view: one tight
- *    row per load (state dot · name · "next in …" · duration · grid/solar badge ·
- *    expand chevron). Tap a row to expand its periods.
+ * 1. `custom:load-scheduler-card` — a responsive grid of load "tiles": each tile
+ *    shows a status dot (with on/idle/off label), the load name, and either its
+ *    target + time-run-today and an on/off button (actionable loads) or just the
+ *    next run + countdown (informational loads, e.g. a dishwasher). Tapping a
+ *    tile opens one shared full-width schedule panel below the grid. Any
+ *    non-scheduler entity (a plain switch/light/input_boolean) gets a basic tile
+ *    instead — name, on/off dot + toggle, and how long it's been on — so this
+ *    card can replace a regular entities/glance card too.
  *
  * 2. `custom:load-scheduler-diagnostic-card` — a denser, always-expanded panel
  *    per load showing the *rationale*: the targets math (target → done today →
@@ -20,6 +25,14 @@
  */
 
 const SOURCE_ICON = { solar: "☀", grid: "⚡", mixed: "☀⚡" };
+// The dot's tiny label maps the dot colour to a word: actually drawing power →
+// "on", powered-but-satisfied → "idle", off → "off".
+const DOT_LABEL = { heating: "on", idle: "idle", off: "off" };
+// Inline power glyph for the round on/off toggle (no icon-font dependency).
+const POWER_SVG =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" ' +
+  'stroke-linecap="round" aria-hidden="true"><path d="M12 3.5v8"/>' +
+  '<path d="M7 6.6a7 7 0 1 0 10 0"/></svg>';
 const MODE_LABEL = {
   non_sequential: "cheapest",
   sequential: "block",
@@ -120,17 +133,80 @@ function registerCard(card) {
  * Card 1: the compact "next run" card
  * ------------------------------------------------------------------ */
 
+const CARD_CSS = `
+  .title { font-weight: 600; font-size: 0.92em; padding: 7px 10px 1px; }
+  .hint { color: var(--secondary-text-color); padding: 8px 10px; font-size: 0.82em; }
+  .grid { display: grid; gap: 6px; padding: 6px 10px 10px; align-items: start;
+          grid-template-columns: repeat(auto-fill, minmax(138px, 1fr)); }
+  .tile { border: 1px solid var(--divider-color, rgba(127,127,127,0.25)); border-radius: 10px;
+          padding: 5px 8px 7px; cursor: pointer; background: var(--card-background-color);
+          transition: border-color 0.15s, box-shadow 0.15s; }
+  .tile:hover { border-color: var(--primary-color); }
+  .tile.selected { border-color: var(--primary-color);
+          box-shadow: 0 0 0 1px var(--primary-color) inset; }
+  .tile.missing { color: var(--error-color); cursor: default; font-size: 0.78em; }
+  .tile .top { display: flex; align-items: center; gap: 6px; min-height: 36px; }
+  .tile .dot { width: 13px; height: 13px; border-radius: 50%;
+          background: var(--disabled-text-color); flex: 0 0 auto; }
+  .tile .dot.heating { background: #ff9800; animation: ls-glow 1.5s ease-in-out infinite; }
+  .tile .dot.idle { background: #ffe082; }
+  .tile .dot.on { background: var(--success-color, #4caf50); }
+  .tile .dlabel { font-size: 0.62em; text-transform: uppercase; letter-spacing: 0.06em;
+          color: var(--secondary-text-color); flex: 1 1 auto; }
+  /* Round, finger-sized on/off button (touch target ~36px). */
+  .toggle { flex: 0 0 auto; cursor: pointer; user-select: none; width: 36px; height: 36px;
+          border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+          border: 1.5px solid var(--divider-color, rgba(127,127,127,0.5));
+          background: var(--card-background-color); color: var(--secondary-text-color);
+          transition: background 0.15s, border-color 0.15s, transform 0.1s; }
+  .toggle svg { width: 18px; height: 18px; }
+  .toggle.on { background: var(--primary-color); border-color: var(--primary-color);
+          color: var(--text-primary-color, #fff); }
+  .toggle:hover { border-color: var(--primary-color); }
+  .toggle:active { transform: scale(0.92); }
+  .tile .name { font-weight: 600; font-size: 0.88em; margin: 4px 0 3px;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tile .line { display: flex; justify-content: space-between; gap: 8px; font-size: 0.76em;
+          line-height: 1.5; }
+  .tile .line .lk { color: var(--secondary-text-color); }
+  .tile .line .lv { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tile .muted { color: var(--secondary-text-color); }
+  .detail { margin: 0 10px 10px; border: 1px solid var(--divider-color, rgba(127,127,127,0.25));
+          border-radius: 10px; padding: 6px 10px; background: var(--secondary-background-color);
+          font-variant-numeric: tabular-nums; }
+  .detail-head { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+          margin-bottom: 3px; }
+  .detail-name { font-weight: 600; font-size: 0.85em; }
+  .detail .close { cursor: pointer; color: var(--secondary-text-color); padding: 2px 6px;
+          font-size: 1em; user-select: none; }
+  .detail .prow { font-size: 0.78em; line-height: 1.5; }
+  .detail .prow.tot { color: var(--secondary-text-color); margin-top: 3px; }
+  .detail .prow.muted { color: var(--secondary-text-color); }
+  @keyframes ls-glow {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(255,152,0,0.5); }
+    50% { box-shadow: 0 0 8px 3px rgba(255,152,0,0.6); }
+  }
+`;
+
 class LoadSchedulerCard extends HTMLElement {
   // `entities` is optional now (auto-discovered when omitted) so the UI editor
   // can start from an empty config without throwing.
   setConfig(config) {
     this._config = config || {};
-    this._expanded = new Set();
+    this._selected = null; // entity id whose schedule the shared panel shows
+    this._timer = null; // auto-collapse handle for the detail panel
   }
 
   set hass(hass) {
     this._hass = hass;
     this._render();
+  }
+
+  disconnectedCallback() {
+    if (this._timer) {
+      clearTimeout(this._timer);
+      this._timer = null;
+    }
   }
 
   _entities() {
@@ -139,12 +215,12 @@ class LoadSchedulerCard extends HTMLElement {
   }
 
   getCardSize() {
-    return 1 + (this._entities().length || 1);
+    return 2 + Math.ceil((this._entities().length || 1) / 2);
   }
 
-  // Sections (grid) view: resizable, and narrower than a full section if wanted.
+  // Sections (grid) view: resizable; tiles want a little width to read well.
   getGridOptions() {
-    return { columns: 12, min_columns: 3, rows: "auto" };
+    return { columns: 12, min_columns: 4, rows: "auto" };
   }
 
   static getConfigElement() {
@@ -155,47 +231,188 @@ class LoadSchedulerCard extends HTMLElement {
     return { entities: discoverScheduleEntities(hass) };
   }
 
-  _row(entityId) {
-    const st = this._hass.states[entityId];
-    if (!st) return `<div class="row missing">${entityId} (unavailable)</div>`;
+  // The displayed target — read the sibling `number` so it honours the load's
+  // configured unit (minutes shown as a duration, kWh shown as kWh).
+  _targetText(entityId, a) {
+    const ctl = loadControls(this._hass, entityId);
+    if (ctl.target) {
+      const ts = this._hass.states[ctl.target];
+      if (ts && ts.state != null && ts.state !== "unknown" && ts.state !== "unavailable") {
+        const unit = ts.attributes.unit_of_measurement || "";
+        const num = parseFloat(ts.state);
+        if (unit === "min" || unit === "minutes") return num > 0 ? fmtDuration(num) : "—";
+        return `${ts.state}${unit ? " " + unit : ""}`;
+      }
+    }
+    const t = a.target_minutes || 0;
+    return t > 0 ? fmtDuration(t) : "—";
+  }
+
+  // A plain switch/light/input_boolean tile: name, on/off dot + toggle, and how
+  // long it's been on. Used for any entity that isn't a scheduler schedule sensor
+  // so this card can replace a regular entities/glance card too.
+  _basicTile(entityId, st) {
     const a = st.attributes || {};
-    const periods = a.periods || [];
+    const name = a.friendly_name || entityId;
+    const state = st.state;
+    const isOn = state === "on";
+    const toggleable = isOn || state === "off";
+    let top;
+    if (toggleable) {
+      top =
+        `<span class="dot ${isOn ? "on" : "off"}"></span>` +
+        `<span class="dlabel">${isOn ? "on" : "off"}</span>` +
+        `<span class="toggle ${isOn ? "on" : "off"}" data-action="toggle" ` +
+        `data-entity="${entityId}" data-on="${isOn}" ` +
+        `title="${isOn ? "Turn off" : "Turn on"}" role="button" ` +
+        `aria-label="${isOn ? "Turn off" : "Turn on"}">${POWER_SVG}</span>`;
+    } else {
+      // Not an on/off entity (e.g. unavailable, or a plain sensor): show state.
+      top = `<span class="dot"></span><span class="dlabel">${state}</span>`;
+    }
+    let body = "";
+    if (isOn && st.last_changed) {
+      const mins = (Date.now() - new Date(st.last_changed)) / 60000;
+      body = `<div class="line"><span class="lk">On for</span><span class="lv">${fmtDuration(
+        mins,
+      )}</span></div>`;
+    }
+    return `<div class="tile basic">
+      <div class="top">${top}</div>
+      <div class="name">${name}</div>
+      ${body}
+    </div>`;
+  }
+
+  _tile(entityId) {
+    const st = this._hass.states[entityId];
+    if (!st) return `<div class="tile missing">${entityId} (unavailable)</div>`;
+    const a = st.attributes || {};
+    // Anything that isn't one of our schedule sensors → a basic switch tile.
+    if (!(Array.isArray(a.periods) && a.config && a.config.mode)) {
+      return this._basicTile(entityId, st);
+    }
+    const c = a.config || {};
     const name = (a.friendly_name || entityId).replace(/\s*schedule$/i, "");
-    const totalMin = periods.reduce(
-      (s, p) => s + (new Date(p.end) - new Date(p.start)) / 60000,
-      0,
-    );
-    const sources = new Set(periods.map((p) => p.source));
-    const src = sources.size > 1 ? "mixed" : [...sources][0] || "grid";
+    const controlled = c.controlled_entity;
+    const informational = c.mode === "informational" || !controlled;
+    const dc = dotClass(a);
+    const selected = this._selected === entityId;
 
-    let when;
-    if (a.status && a.status !== "ok") when = a.status;
-    else if (a.running) when = "now";
-    else if (st.state && st.state !== "unknown") when = fmtRelative(st.state);
-    else when = "idle";
+    let top;
+    if (informational) {
+      // Display-only load: a plain status dot, no on/off control.
+      top = `<span class="dot ${dc}"></span><span class="dlabel"></span>`;
+    } else {
+      const on = a.active === true;
+      top =
+        `<span class="dot ${dc}"></span><span class="dlabel">${DOT_LABEL[dc]}</span>` +
+        `<span class="toggle ${on ? "on" : "off"}" data-action="toggle" ` +
+        `data-entity="${controlled}" data-on="${on}" ` +
+        `title="${on ? "Turn off" : "Turn on"}" role="button" ` +
+        `aria-label="${on ? "Turn off" : "Turn on"}">${POWER_SVG}</span>`;
+    }
 
-    const expanded = this._expanded.has(entityId);
-    const detail =
-      expanded && periods.length
-        ? `<div class="detail">${periods
-            .map(
-              (p) =>
-                `<div>${fmtClock(p.start)} → ${fmtClock(p.end)} ${
-                  SOURCE_ICON[p.source] || ""
-                }</div>`,
-            )
-            .join("")}</div>`
-        : "";
+    let body;
+    if (informational) {
+      const next =
+        st.state && st.state !== "unknown" && st.state !== "unavailable"
+          ? `<div class="line"><span class="lk">Next</span><span class="lv">${fmtClock(
+              st.state,
+            )}</span></div>` +
+            `<div class="line"><span class="lk"></span><span class="lv">${fmtRelative(
+              st.state,
+            )}</span></div>`
+          : `<div class="line"><span class="lv muted">no run scheduled</span></div>`;
+      body = next;
+    } else {
+      body =
+        `<div class="line"><span class="lk">Target</span><span class="lv">${this._targetText(
+          entityId,
+          a,
+        )}</span></div>` +
+        `<div class="line"><span class="lk">Today</span><span class="lv">${fmtDuration(
+          a.delivered_minutes || 0,
+        )}</span></div>`;
+    }
 
-    return `
-      <div class="row${expanded ? " expanded" : ""}" data-entity="${entityId}">
-        <span class="dot ${dotClass(a)}"></span>
-        <span class="name">${name}</span>
-        <span class="when">${when}</span>
-        <span class="dur">${periods.length ? fmtDuration(totalMin) : ""}</span>
-        <span class="badge">${periods.length ? SOURCE_ICON[src] || "" : ""}</span>
-        <span class="chev">${periods.length ? "›" : ""}</span>
-      </div>${detail}`;
+    return `<div class="tile${selected ? " selected" : ""}" data-tile="${entityId}">
+      <div class="top">${top}</div>
+      <div class="name">${name}</div>
+      ${body}
+    </div>`;
+  }
+
+  // The single shared detail panel rendered below the grid for the selected tile.
+  _detail() {
+    if (!this._selected) return "";
+    const st = this._hass.states[this._selected];
+    if (!st) return "";
+    const a = st.attributes || {};
+    const name = (a.friendly_name || this._selected).replace(/\s*schedule$/i, "");
+    const sym = currencySymbol(this._hass);
+    const ps = a.periods || [];
+    const rows = ps.length
+      ? ps
+          .map((p) => {
+            const mins = (new Date(p.end) - new Date(p.start)) / 60000;
+            return `<div class="prow">${fmtClock(p.start)} → ${fmtClock(p.end)} · ${fmtDuration(
+              mins,
+            )}</div>`;
+          })
+          .join("")
+      : `<div class="prow muted">No runs scheduled.</div>`;
+    const tot = [];
+    if (a.scheduled_minutes) tot.push(`${fmtDuration(a.scheduled_minutes)} total`);
+    if (a.est_cost) tot.push(`est ${sym}${a.est_cost.toFixed(2)}`);
+    const totLine = tot.length ? `<div class="prow tot">${tot.join(" · ")}</div>` : "";
+    return `<div class="detail">
+      <div class="detail-head">
+        <span class="detail-name">${name} — schedule</span>
+        <span class="close" data-close="1">✕</span>
+      </div>${rows}${totLine}</div>`;
+  }
+
+  // Only (re)arm the auto-collapse timer when the selection actually changes —
+  // `_render` runs on every (frequent) hass update and must not reset it.
+  _select(id) {
+    this._selected = id;
+    if (this._timer) {
+      clearTimeout(this._timer);
+      this._timer = null;
+    }
+    if (id) {
+      this._timer = setTimeout(() => {
+        this._selected = null;
+        this._timer = null;
+        this._render();
+      }, 60000);
+    }
+    this._render();
+  }
+
+  _onClick(e) {
+    const toggle = e.target.closest("[data-action]");
+    if (toggle) {
+      e.stopPropagation(); // never open the detail panel from the on/off button
+      const entity = toggle.dataset.entity;
+      const on = toggle.dataset.on === "true";
+      if (this._hass && entity) {
+        this._hass.callService("homeassistant", on ? "turn_off" : "turn_on", {
+          entity_id: entity,
+        });
+      }
+      return;
+    }
+    if (e.target.closest("[data-close]")) {
+      this._select(null);
+      return;
+    }
+    const tile = e.target.closest("[data-tile]");
+    if (tile && tile.dataset.tile) {
+      const id = tile.dataset.tile;
+      this._select(this._selected === id ? null : id);
+    }
   }
 
   _render() {
@@ -203,46 +420,16 @@ class LoadSchedulerCard extends HTMLElement {
     if (!this._card) {
       this._card = document.createElement("ha-card");
       this.appendChild(this._card);
-      this._card.addEventListener("click", (e) => {
-        const row = e.target.closest(".row");
-        if (!row || !row.dataset.entity) return;
-        const id = row.dataset.entity;
-        this._expanded.has(id) ? this._expanded.delete(id) : this._expanded.add(id);
-        this._render();
-      });
+      this._card.addEventListener("click", (e) => this._onClick(e));
     }
     const title = this._config.title
       ? `<div class="title">${this._config.title}</div>`
       : "";
     const entities = this._entities();
-    const rows = entities.length
-      ? entities.map((e) => this._row(e)).join("")
+    const grid = entities.length
+      ? `<div class="grid">${entities.map((e) => this._tile(e)).join("")}</div>`
       : `<div class="hint">No Load Scheduler schedule sensors found — pick them in the card editor.</div>`;
-    this._card.innerHTML = `
-      <style>
-        .title { font-weight: 600; padding: 8px 12px 2px; }
-        .hint { color: var(--secondary-text-color); padding: 8px 12px; font-size: 0.9em; }
-        .row { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px;
-               padding: 3px 12px; cursor: pointer; font-size: 0.95em; line-height: 1.25; }
-        .row .name { flex: 1 1 auto; min-width: 0; font-weight: 500;
-               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .row .when { color: var(--secondary-text-color); white-space: nowrap; }
-        .row .dur { color: var(--secondary-text-color); white-space: nowrap;
-               font-variant-numeric: tabular-nums; min-width: 2.5em; text-align: right; }
-        .row .badge { white-space: nowrap; text-align: right; flex: 0 0 auto; }
-        .row .chev { color: var(--secondary-text-color); width: 0.8em;
-               transition: transform 0.15s; }
-        .row.expanded .chev { transform: rotate(90deg); }
-        .row .dot { width: 9px; height: 9px; border-radius: 50%;
-               background: var(--disabled-text-color); flex: 0 0 auto; }
-        .row .dot.heating { background: #ff9800; }
-        .row .dot.idle { background: #ffe082; }
-        .row.missing { color: var(--error-color); padding: 6px 12px; }
-        .detail { padding: 0 12px 4px 29px; color: var(--secondary-text-color);
-               font-size: 0.85em; line-height: 1.4; font-variant-numeric: tabular-nums; }
-      </style>
-      ${title}
-      ${rows}`;
+    this._card.innerHTML = `<style>${CARD_CSS}</style>${title}${grid}${this._detail()}`;
   }
 }
 
@@ -337,39 +524,148 @@ function periodsHtml(a, sym) {
   return `<div class="periods">${rows}${totLine}</div>`;
 }
 
+/* ---- Natural-language rationale --------------------------------------------- *
+ * Turn the coordinator's structured `rationale` attribute (+ the targets/config
+ * attrs) into a plain-English explanation of what the load is doing and why.
+ * The facts come from the backend (rationale.py); the wording lives here.       */
+
+function priceText(sym, v) {
+  return `${sym}${Number(v).toFixed(3)}/kWh`;
+}
+
+function rationaleText(a, sym) {
+  const r = a.rationale;
+  const c = a.config || {};
+  if (!r) return "No scheduling rationale available yet.";
+
+  if (r.boost && a.boost_until) {
+    return `Running now because you pressed Boost — until ${fmtClock(a.boost_until)}.`;
+  }
+  if (r.skip_reason === "disabled") {
+    return "Scheduling is turned off for this load (its enable switch is off).";
+  }
+  if (r.skip_reason === "no_price_data") {
+    return (a.periods || []).length
+      ? "No price forecast is available, so it falls back to the fixed failsafe time."
+      : "Waiting for a price forecast — none is available right now, so nothing is scheduled.";
+  }
+  if (r.skip_reason) return skipSentence(r, a, c, sym);
+  return scheduledSentence(r, a, c, sym);
+}
+
+function skipSentence(r, a, c, sym) {
+  if (r.skip_reason === "already_satisfied") {
+    const noTarget = (a.target_minutes || 0) <= 0 && !c.min_service_minutes;
+    if (noTarget) {
+      const triggers = [];
+      if (c.allow_solar) triggers.push("solar surplus");
+      if (c.temp_entity) triggers.push(`the room dropping below ${c.temp_min}°`);
+      const t = triggers.length ? triggers.join(" or ") : "a manual boost";
+      return `No daily target — it only runs on ${t}. Neither applies right now, so it stays off.`;
+    }
+    const done = fmtDuration(a.delivered_minutes || 0);
+    return c.min_service_minutes
+      ? `Done for today — its daily minimum is already covered (${done} run).`
+      : `Done for today — the target is already met (${done} run).`;
+  }
+  if (r.skip_reason === "no_slots_in_window") {
+    return "Nothing scheduled: no price slots fall inside this load's time window yet.";
+  }
+  if (r.skip_reason === "all_above_cap") {
+    const cap = r.cap != null ? `${sym}${r.cap}/kWh` : "your";
+    const cheapest =
+      r.cheapest_cost != null ? ` (cheapest is ${priceText(sym, r.cheapest_cost)})` : "";
+    return `Nothing scheduled: every slot in the window is above your ${cap} price cap${cheapest}. It will wait for cheaper prices.`;
+  }
+  if (r.skip_reason === "no_contiguous_block") {
+    return "Nothing scheduled: no cheap-enough continuous block long enough fits in the window.";
+  }
+  return "Nothing scheduled right now.";
+}
+
+function scheduledSentence(r, a, c, sym) {
+  const informational = c.mode === "informational" || !c.controlled_entity;
+  const mins = r.scheduled_minutes || 0;
+  const parts = [];
+
+  if (informational) {
+    const first = (a.periods || [])[0];
+    let s = `Cheapest ${fmtDuration(mins)} block starts ${first ? fmtClock(first.start) : "—"}`;
+    if (first) {
+      const rel = fmtRelative(first.start);
+      if (rel && rel !== "idle") s += ` (${rel})`;
+    }
+    parts.push(s + ".", "Display only — it isn't switched automatically.");
+    return parts.join(" ");
+  }
+
+  const target = a.target_minutes || 0;
+  const done = a.delivered_minutes || 0;
+  if (target > 0) {
+    let s = `Needs ${fmtDuration(target)} today`;
+    if (done > 0) {
+      s += `; ${fmtDuration(done)} already ran, so ${fmtDuration(a.remaining_minutes || 0)} left`;
+    }
+    parts.push(s + ".");
+  } else if (c.min_service_minutes) {
+    parts.push(`Running its ${fmtDuration(c.min_service_minutes)} daily minimum.`);
+  }
+
+  let s =
+    c.mode === "sequential"
+      ? `Booked the cheapest continuous ${fmtDuration(mins)}`
+      : `Booked the cheapest ${fmtDuration(mins)}`;
+  if (r.cap != null) s += ` at or below your ${sym}${r.cap}/kWh cap`;
+  if (r.cheapest_cost != null) s += ` (cheapest ${priceText(sym, r.cheapest_cost)})`;
+  if (a.est_cost) s += ` — about ${sym}${a.est_cost.toFixed(2)}`;
+  parts.push(s + ".");
+
+  if (r.solar_enabled) {
+    if (r.solar_minutes > 0) {
+      parts.push(`Solar surplus covers ${fmtDuration(r.solar_minutes)} of it.`);
+    } else if (r.solar_excess_kwh > 0.05) {
+      parts.push("Some solar surplus is forecast, but cheaper grid slots won out.");
+    } else {
+      parts.push("No solar surplus is forecast in this window.");
+    }
+  }
+
+  return parts.join(" ");
+}
+
 const DIAG_CSS = `
-  .title { font-weight: 600; padding: 10px 12px 2px; }
-  .hint { color: var(--secondary-text-color); padding: 10px 12px; font-size: 0.9em; }
-  .panel { padding: 8px 12px; border-top: 1px solid var(--divider-color, rgba(127,127,127,0.2)); }
+  .title { font-weight: 600; font-size: 0.92em; padding: 8px 10px 1px; }
+  .hint { color: var(--secondary-text-color); padding: 8px 10px; font-size: 0.82em; }
+  .panel { padding: 6px 10px; border-top: 1px solid var(--divider-color, rgba(127,127,127,0.2)); }
   .panel.first { border-top: none; }
-  .panel.missing { color: var(--error-color); }
-  .head { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; }
-  .head .name { flex: 1 1 auto; min-width: 0; font-weight: 600;
+  .panel.missing { color: var(--error-color); font-size: 0.82em; }
+  .head { display: flex; flex-wrap: nowrap; align-items: center; gap: 7px; }
+  .head .name { flex: 1 1 auto; min-width: 0; font-weight: 600; font-size: 0.92em;
          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .head .when { color: var(--secondary-text-color); white-space: nowrap; font-size: 0.9em; }
-  .badge-mode { font-size: 0.68em; text-transform: uppercase; letter-spacing: 0.04em;
+  .head .when { color: var(--secondary-text-color); white-space: nowrap; font-size: 0.8em; }
+  .badge-mode { font-size: 0.6em; text-transform: uppercase; letter-spacing: 0.04em;
          padding: 1px 6px; border-radius: 8px; background: var(--secondary-background-color);
          color: var(--secondary-text-color); white-space: nowrap; flex: 0 0 auto; }
-  .dot { width: 9px; height: 9px; border-radius: 50%;
+  .dot { width: 11px; height: 11px; border-radius: 50%;
          background: var(--disabled-text-color); flex: 0 0 auto; }
   .dot.heating { background: #ff9800; }
   .dot.idle { background: #ffe082; }
-  .sec { margin-top: 7px; }
-  .sec .lbl { font-size: 0.68em; text-transform: uppercase; letter-spacing: 0.05em;
+  .sec { margin-top: 6px; }
+  .sec .lbl { font-size: 0.6em; text-transform: uppercase; letter-spacing: 0.05em;
          color: var(--secondary-text-color); margin-bottom: 2px; }
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 0 10px;
-         font-size: 0.88em; line-height: 1.45; }
+         font-size: 0.8em; line-height: 1.4; }
   .kv .k { color: var(--secondary-text-color); white-space: nowrap; }
   .kv .v { font-variant-numeric: tabular-nums; }
-  .wiring { font-size: 0.78em; color: var(--secondary-text-color); margin-top: 3px;
+  .wiring { font-size: 0.72em; color: var(--secondary-text-color); margin-top: 3px;
          word-break: break-all; }
-  .periods { font-size: 0.85em; line-height: 1.5; font-variant-numeric: tabular-nums; }
+  .periods { font-size: 0.78em; line-height: 1.45; font-variant-numeric: tabular-nums; }
   .periods .tot { color: var(--secondary-text-color); margin-top: 2px; }
   .periods .k { color: var(--secondary-text-color); }
-  .controls { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; align-items: center; }
+  .controls { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
   .btn { cursor: pointer; border: 1px solid var(--divider-color, rgba(127,127,127,0.4));
          background: var(--card-background-color); color: var(--primary-text-color);
-         border-radius: 14px; padding: 3px 11px; font-size: 0.85em; user-select: none;
+         border-radius: 14px; padding: 4px 12px; font-size: 0.8em; user-select: none;
          white-space: nowrap; }
   .btn:hover { background: var(--secondary-background-color); }
   .btn.on { background: var(--primary-color); color: var(--text-primary-color, #fff);
@@ -378,17 +674,22 @@ const DIAG_CSS = `
   .stepper { display: inline-flex; align-items: center; gap: 4px;
          border: 1px solid var(--divider-color, rgba(127,127,127,0.4)); border-radius: 14px;
          padding: 1px 4px; }
-  .stepper .sbtn { cursor: pointer; width: 20px; text-align: center; user-select: none;
+  .stepper .sbtn { cursor: pointer; width: 22px; text-align: center; user-select: none;
          font-weight: 600; font-size: 1.05em; }
   .stepper .sval { font-variant-numeric: tabular-nums; min-width: 4em; text-align: center;
-         font-size: 0.85em; }
-  .row { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px;
-         cursor: pointer; font-size: 0.95em; line-height: 1.3; }
+         font-size: 0.8em; }
+  .row { display: flex; flex-wrap: nowrap; align-items: center; gap: 7px;
+         cursor: pointer; font-size: 0.9em; line-height: 1.3; }
   .row .name { flex: 1 1 auto; min-width: 0; font-weight: 500;
          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .row .when { color: var(--secondary-text-color); white-space: nowrap; font-size: 0.9em; }
+  .row .when { color: var(--secondary-text-color); white-space: nowrap; font-size: 0.88em; }
   .row .chev { color: var(--secondary-text-color); width: 0.8em; transition: transform 0.15s; }
   .row.expanded .chev { transform: rotate(90deg); }
+  .rationale { font-size: 0.86em; line-height: 1.45; margin: 5px 0 2px; }
+  .details-toggle { margin-top: 7px; color: var(--secondary-text-color);
+         font-size: 0.64em; text-transform: uppercase; letter-spacing: 0.05em; }
+  .details-toggle .lbl { flex: 1 1 auto; }
+  .cbody { margin-top: 4px; }
 `;
 
 class LoadSchedulerDiagnosticCard extends HTMLElement {
@@ -491,11 +792,15 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
     const name = (a.friendly_name || entityId).replace(/\s*schedule$/i, "");
     const mode = MODE_LABEL[c.mode] || c.mode || "";
     const compact = this._opt("compact", false);
+    const expanded = this._expanded.has(entityId);
+    const narrative = this._opt("show_rationale", true)
+      ? `<div class="rationale">${rationaleText(a, sym)}</div>`
+      : "";
 
     if (compact) {
-      const expanded = this._expanded.has(entityId);
+      // One tappable row; expanding reveals the narrative + structured detail.
       const body = expanded
-        ? `<div style="margin-top:4px">${this._sections(entityId, a, sym)}</div>`
+        ? `<div class="cbody">${narrative}${this._sections(entityId, a, sym)}</div>`
         : "";
       return `<div class="panel${first ? " first" : ""}">
         <div class="row${expanded ? " expanded" : ""}" data-entity="${entityId}">
@@ -507,13 +812,18 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
         </div>${body}</div>`;
     }
 
+    // Narrative leads; the structured sections sit behind a "Details" toggle.
     const head = `<div class="head">
         <span class="dot ${dotClass(a)}"></span>
         <span class="name">${name}</span>
         <span class="badge-mode">${mode}</span>
         <span class="when">${whenText(st, a)}</span>
       </div>`;
-    return `<div class="panel${first ? " first" : ""}">${head}${this._sections(entityId, a, sym)}</div>`;
+    const toggle = `<div class="row details-toggle${expanded ? " expanded" : ""}" data-entity="${entityId}">
+        <span class="lbl">Details</span><span class="chev">›</span>
+      </div>`;
+    const details = expanded ? this._sections(entityId, a, sym) : "";
+    return `<div class="panel${first ? " first" : ""}">${head}${narrative}${toggle}${details}</div>`;
   }
 
   _handleAction(el) {
@@ -578,9 +888,13 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
  * UI editors (shared base on top of HA's <ha-form>)
  * ------------------------------------------------------------------ */
 
+// Diagnostic card: only our schedule sensors (it needs the rationale/config).
 const ENTITIES_SELECTOR = {
   entity: { multiple: true, filter: { integration: "load_scheduler", domain: "sensor" } },
 };
+// Compact card: any entity — schedule sensors render rich tiles, plain
+// switches/lights/etc. render basic on/off tiles.
+const ANY_ENTITIES_SELECTOR = { entity: { multiple: true } };
 
 class LoadSchedulerCardEditorBase extends HTMLElement {
   setConfig(config) {
@@ -633,11 +947,14 @@ class LoadSchedulerCardEditor extends LoadSchedulerCardEditorBase {
   _schema() {
     return [
       { name: "title", selector: { text: {} } },
-      { name: "entities", selector: ENTITIES_SELECTOR },
+      { name: "entities", selector: ANY_ENTITIES_SELECTOR },
     ];
   }
   _labels() {
-    return { title: "Title (optional)", entities: "Schedule sensors (auto if empty)" };
+    return {
+      title: "Title (optional)",
+      entities: "Entities — schedule sensors or any switch (auto if empty)",
+    };
   }
 }
 
@@ -647,6 +964,7 @@ class LoadSchedulerDiagnosticCardEditor extends LoadSchedulerCardEditorBase {
   setConfig(config) {
     this._config = {
       compact: false,
+      show_rationale: true,
       show_targets: true,
       show_config: true,
       show_costs: true,
@@ -661,6 +979,7 @@ class LoadSchedulerDiagnosticCardEditor extends LoadSchedulerCardEditorBase {
       { name: "title", selector: { text: {} } },
       { name: "entities", selector: ENTITIES_SELECTOR },
       { name: "compact", selector: { boolean: {} } },
+      { name: "show_rationale", selector: { boolean: {} } },
       { name: "show_targets", selector: { boolean: {} } },
       { name: "show_config", selector: { boolean: {} } },
       { name: "show_costs", selector: { boolean: {} } },
@@ -672,6 +991,7 @@ class LoadSchedulerDiagnosticCardEditor extends LoadSchedulerCardEditorBase {
       title: "Title (optional)",
       entities: "Schedule sensors (auto if empty)",
       compact: "Compact (collapse to rows)",
+      show_rationale: "Show plain-English rationale",
       show_targets: "Show targets math",
       show_config: "Show configuration",
       show_costs: "Show schedule & cost",

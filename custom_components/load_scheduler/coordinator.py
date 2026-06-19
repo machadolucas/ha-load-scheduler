@@ -30,7 +30,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from . import baseline as baseline_mod
-from . import engine, price_source, solar_source
+from . import engine, price_source, rationale, solar_source
 from .const import (
     CONF_BASELINE_ENTITY,
     CONF_BUY_PRICE_ENTITY,
@@ -48,6 +48,7 @@ from .const import (
 from .engine import Period, RunSource
 from .models import LoadConfig, build_load_params
 from .persistence import RuntimeStore
+from .rationale import PlanRationale
 from .windows import next_time
 
 # How often the recorder-backed "delivered today" measurement is recomputed.
@@ -116,6 +117,7 @@ class LoadPlan:
     solar_enabled: bool = False  # competed for solar excess this tick
     scheduled_minutes: float = 0.0  # sum of the planned periods' minutes
     est_cost: float = 0.0  # rough run cost (€) when the load's draw is known
+    rationale: PlanRationale | None = None  # narration-ready decision facts
 
     def active_period(self, when: datetime) -> Period | None:
         """The period containing ``when`` (UTC), if any."""
@@ -550,43 +552,52 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
                 solar_enabled=solar,
             )
             periods: list[Period] = []
-            if rt.enabled:
-                if base_slots:
-                    slots = [
-                        engine.Slot(
-                            start=s.start,
-                            end=s.end,
-                            buy=s.buy,
-                            sell=s.sell,
-                            excess_kwh=residual.get(s.start, 0.0) if solar else 0.0,
-                        )
-                        for s in base_slots
-                    ]
-                    params = build_load_params(
-                        cfg,
-                        now,
-                        rt.target_minutes,
-                        delivered_minutes=delivered,
-                        solar_enabled=solar,
-                        draw_kw=cfg.draw_kw,
+            rat: PlanRationale | None = None
+            if not rt.enabled:
+                rat = rationale.state_only(cfg.mode, rationale.SKIP_DISABLED, solar_enabled=solar)
+            elif base_slots:
+                slots = [
+                    engine.Slot(
+                        start=s.start,
+                        end=s.end,
+                        buy=s.buy,
+                        sell=s.sell,
+                        excess_kwh=residual.get(s.start, 0.0) if solar else 0.0,
                     )
-                    periods = engine.compute_plan(slots, params)
-                    if solar:
-                        self._consume_excess(residual, base_slots, periods, cfg.draw_kw)
-                else:
-                    periods = self._failsafe_periods(cfg, rt, now)
-                    if not periods:
-                        plan.error = "no_price_data"
+                    for s in base_slots
+                ]
+                params = build_load_params(
+                    cfg,
+                    now,
+                    rt.target_minutes,
+                    delivered_minutes=delivered,
+                    solar_enabled=solar,
+                    draw_kw=cfg.draw_kw,
+                )
+                periods = engine.compute_plan(slots, params)
+                rat = rationale.explain(slots, params, periods, now=now)
+                if solar:
+                    self._consume_excess(residual, base_slots, periods, cfg.draw_kw)
+            else:
+                periods = self._failsafe_periods(cfg, rt, now)
+                if not periods:
+                    plan.error = "no_price_data"
+                rat = rationale.state_only(
+                    cfg.mode, rationale.SKIP_NO_PRICE_DATA, solar_enabled=solar
+                )
             # A manual boost overrides both the price plan and the enable switch.
             if rt.boost_until and now_utc < rt.boost_until:
                 boost = Period(now_utc, rt.boost_until, RunSource.GRID, 0.0)
                 periods = engine.merge_periods([*periods, boost])
                 plan.error = None
                 plan.boost_until = rt.boost_until
+                if rat is not None:
+                    rat.boost = True
             plan.periods = periods
             plan.scheduled_minutes = sum(p.minutes for p in periods)
             if cfg.draw_kw:
                 plan.est_cost = sum(p.minutes / 60.0 * cfg.draw_kw * p.avg_cost for p in periods)
+            plan.rationale = rat
             plans[subentry_id] = plan
         return plans
 

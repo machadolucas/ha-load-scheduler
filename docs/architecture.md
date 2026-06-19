@@ -40,6 +40,7 @@ solar entity ─┘ solar_source + baseline → excess ───┤
 | `windows.py` | DST-safe window + next-time resolution | no |
 | `baseline.py` | Hour-of-day consumption profile from samples | no |
 | `models.py` | Subentry config → `LoadConfig` → `LoadParams` | no |
+| `rationale.py` | Pure decision facts (skip reason, cap-qualifying slots, solar coverage) for the diagnostic card's plain-English narration | no |
 | `coordinator.py` | Read sources, allocate solar by priority, run engine per load, repairs, statistics baseline | yes |
 | `actuation.py` | Resolve desired state (override → safety → plan → divert), drive controlled entities, restart catch-up | yes |
 | `persistence.py` | `Store` for runtime (target/enabled/boost) | yes |

@@ -19,6 +19,31 @@ from homeassistant.util import dt as dt_util
 from .const import SUBENTRY_TYPE_LOAD
 from .coordinator import LoadSchedulerConfigEntry
 from .entity import LoadSchedulerEntity
+from .rationale import PlanRationale
+
+
+def _rationale_attr(r: PlanRationale | None) -> dict | None:
+    """Serialise the plan rationale into JSON-friendly attribute values."""
+    if r is None:
+        return None
+    return {
+        "mode": r.mode,
+        "skip_reason": r.skip_reason,
+        "scheduled_minutes": round(r.scheduled_minutes, 1),
+        "window_start": (dt_util.as_local(r.window_start).isoformat() if r.window_start else None),
+        "window_end": dt_util.as_local(r.window_end).isoformat() if r.window_end else None,
+        "candidate_count": r.candidate_count,
+        "cap": r.cap,
+        "cap_qualifying_count": r.cap_qualifying_count,
+        "cheapest_cost": round(r.cheapest_cost, 5) if r.cheapest_cost is not None else None,
+        "costliest_selected_cost": (
+            round(r.costliest_selected_cost, 5) if r.costliest_selected_cost is not None else None
+        ),
+        "solar_enabled": r.solar_enabled,
+        "solar_excess_kwh": round(r.solar_excess_kwh, 3),
+        "solar_minutes": round(r.solar_minutes, 1),
+        "boost": r.boost,
+    }
 
 
 async def async_setup_entry(
@@ -44,7 +69,7 @@ class LoadScheduleSensor(LoadSchedulerEntity, SensorEntity):
     # The bulky, slow-to-change attributes don't belong in the recorder: the
     # state (next-run timestamp) keeps its history, but the upcoming-periods
     # list and the static config summary would bloat every recorded row.
-    _unrecorded_attributes = frozenset({"periods", "config"})
+    _unrecorded_attributes = frozenset({"periods", "config", "rationale"})
 
     def __init__(self, coordinator, subentry_id, subentry) -> None:
         super().__init__(coordinator, subentry_id, subentry, "schedule")
@@ -98,6 +123,8 @@ class LoadScheduleSensor(LoadSchedulerEntity, SensorEntity):
             "boost_until": (
                 dt_util.as_local(plan.boost_until).isoformat() if plan.boost_until else None
             ),
+            # Structured decision facts the diagnostic card narrates in prose.
+            "rationale": _rationale_attr(plan.rationale),
             # Static configuration summary (the load's "type" + its wiring), so
             # the card can explain the rules without a second data source. Flat
             # and low-churn; excluded from the recorder via _unrecorded_attributes.
