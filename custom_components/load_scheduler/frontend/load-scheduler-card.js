@@ -209,9 +209,14 @@ class LoadSchedulerCard extends HTMLElement {
     }
   }
 
+  // Normalised, ordered list of {entity, name?}. Accepts both the bare-string
+  // and the {entity, name} object form in config; order is the render order.
   _entities() {
     const list = Array.isArray(this._config.entities) ? this._config.entities : null;
-    return list && list.length ? list : discoverScheduleEntities(this._hass);
+    const raw = list && list.length ? list : discoverScheduleEntities(this._hass);
+    return raw
+      .map((e) => (typeof e === "string" ? { entity: e } : e))
+      .filter((e) => e && e.entity);
   }
 
   getCardSize() {
@@ -251,9 +256,10 @@ class LoadSchedulerCard extends HTMLElement {
   // A plain switch/light/input_boolean tile: name, on/off dot + toggle, and how
   // long it's been on. Used for any entity that isn't a scheduler schedule sensor
   // so this card can replace a regular entities/glance card too.
-  _basicTile(entityId, st) {
+  _basicTile(item, st) {
+    const entityId = item.entity;
     const a = st.attributes || {};
-    const name = a.friendly_name || entityId;
+    const name = item.name || a.friendly_name || entityId;
     const state = st.state;
     const isOn = state === "on";
     const toggleable = isOn || state === "off";
@@ -284,16 +290,17 @@ class LoadSchedulerCard extends HTMLElement {
     </div>`;
   }
 
-  _tile(entityId) {
+  _tile(item) {
+    const entityId = item.entity;
     const st = this._hass.states[entityId];
-    if (!st) return `<div class="tile missing">${entityId} (unavailable)</div>`;
+    if (!st) return `<div class="tile missing">${item.name || entityId} (unavailable)</div>`;
     const a = st.attributes || {};
     // Anything that isn't one of our schedule sensors → a basic switch tile.
     if (!(Array.isArray(a.periods) && a.config && a.config.mode)) {
-      return this._basicTile(entityId, st);
+      return this._basicTile(item, st);
     }
     const c = a.config || {};
-    const name = (a.friendly_name || entityId).replace(/\s*schedule$/i, "");
+    const name = item.name || (a.friendly_name || entityId).replace(/\s*schedule$/i, "");
     const controlled = c.controlled_entity;
     const informational = c.mode === "informational" || !controlled;
     const dc = dotClass(a);
@@ -349,7 +356,9 @@ class LoadSchedulerCard extends HTMLElement {
     const st = this._hass.states[this._selected];
     if (!st) return "";
     const a = st.attributes || {};
-    const name = (a.friendly_name || this._selected).replace(/\s*schedule$/i, "");
+    const item = this._entities().find((e) => e.entity === this._selected);
+    const name =
+      (item && item.name) || (a.friendly_name || this._selected).replace(/\s*schedule$/i, "");
     const sym = currencySymbol(this._hass);
     const ps = a.periods || [];
     const rows = ps.length
@@ -892,9 +901,6 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
 const ENTITIES_SELECTOR = {
   entity: { multiple: true, filter: { integration: "load_scheduler", domain: "sensor" } },
 };
-// Compact card: any entity — schedule sensors render rich tiles, plain
-// switches/lights/etc. render basic on/off tiles.
-const ANY_ENTITIES_SELECTOR = { entity: { multiple: true } };
 
 class LoadSchedulerCardEditorBase extends HTMLElement {
   setConfig(config) {
@@ -943,18 +949,169 @@ class LoadSchedulerCardEditorBase extends HTMLElement {
   }
 }
 
-class LoadSchedulerCardEditor extends LoadSchedulerCardEditorBase {
-  _schema() {
-    return [
-      { name: "title", selector: { text: {} } },
-      { name: "entities", selector: ANY_ENTITIES_SELECTOR },
-    ];
+// Custom editor for the compact card: a reorderable list of entities, each with
+// an optional display-name override, plus an "add entity" picker. (ha-form can't
+// express an ordered list of {entity, name} objects, hence the bespoke UI.)
+class LoadSchedulerCardEditor extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    // Skip the rebuild triggered by our own emit (keeps a name field's focus).
+    if (this._hass && JSON.stringify(this._config) !== this._lastEmitted) {
+      this._build();
+    }
   }
-  _labels() {
-    return {
-      title: "Title (optional)",
-      entities: "Entities — schedule sensors or any switch (auto if empty)",
-    };
+
+  set hass(hass) {
+    const first = !this._hass;
+    this._hass = hass;
+    if (this._addPicker) this._addPicker.hass = hass;
+    if (first && this._config) this._build();
+  }
+
+  // Working list of {entity, name}; from config, else the auto-discovered set so
+  // the user can reorder/rename the defaults straight away.
+  _syncWorking() {
+    const list = Array.isArray(this._config.entities) ? this._config.entities : null;
+    const raw = list && list.length ? list : discoverScheduleEntities(this._hass);
+    this._working = raw.map((e) =>
+      typeof e === "string" ? { entity: e } : { entity: e.entity, name: e.name },
+    );
+  }
+
+  _emit() {
+    const entities = this._working
+      .filter((e) => e && e.entity)
+      .map((e) =>
+        e.name && String(e.name).trim() ? { entity: e.entity, name: String(e.name).trim() } : e.entity,
+      );
+    const next = { ...this._config };
+    if (entities.length) next.entities = entities;
+    else delete next.entities;
+    this._config = next;
+    this._lastEmitted = JSON.stringify(next);
+    this.dispatchEvent(
+      new CustomEvent("config-changed", {
+        detail: { config: next },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
+  _move(i, delta) {
+    const j = i + delta;
+    if (j < 0 || j >= this._working.length) return;
+    const a = this._working;
+    [a[i], a[j]] = [a[j], a[i]];
+    this._emit();
+    this._build();
+  }
+
+  _miniButton(glyph, label, disabled, onClick) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = glyph;
+    b.title = label;
+    b.setAttribute("aria-label", label);
+    b.disabled = !!disabled;
+    b.style.cssText =
+      "flex:0 0 auto;cursor:pointer;width:30px;height:34px;border-radius:8px;font-size:1em;" +
+      "border:1px solid var(--divider-color, rgba(127,127,127,0.5));" +
+      "background:var(--card-background-color);color:var(--primary-text-color);";
+    if (disabled) b.style.opacity = "0.4";
+    if (!disabled) b.addEventListener("click", onClick);
+    return b;
+  }
+
+  _row(item, i) {
+    const st = this._hass.states[item.entity];
+    const friendly = (st && st.attributes && st.attributes.friendly_name) || item.entity;
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;align-items:center;gap:6px;";
+
+    row.appendChild(this._miniButton("↑", "Move up", i === 0, () => this._move(i, -1)));
+    row.appendChild(
+      this._miniButton("↓", "Move down", i === this._working.length - 1, () => this._move(i, 1)),
+    );
+
+    const info = document.createElement("div");
+    info.style.cssText = "flex:1 1 38%;min-width:0;overflow:hidden;";
+    info.innerHTML =
+      `<div style="font-size:0.86em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${friendly}</div>` +
+      `<div style="font-size:0.72em;color:var(--secondary-text-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${item.entity}</div>`;
+    row.appendChild(info);
+
+    const name = document.createElement("ha-textfield");
+    name.label = "Name";
+    name.value = item.name || "";
+    name.placeholder = friendly;
+    name.style.cssText = "flex:1 1 42%;min-width:0;";
+    name.addEventListener("change", () => {
+      this._working[i].name = name.value;
+      this._emit(); // no rebuild → the field keeps focus/value
+    });
+    row.appendChild(name);
+
+    row.appendChild(
+      this._miniButton("✕", "Remove", false, () => {
+        this._working.splice(i, 1);
+        this._emit();
+        this._build();
+      }),
+    );
+    return row;
+  }
+
+  _build() {
+    if (!this._hass || !this._config) return;
+    this._syncWorking();
+    this.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "display:flex;flex-direction:column;gap:10px;padding:4px 0;";
+
+    const title = document.createElement("ha-textfield");
+    title.label = "Title (optional)";
+    title.value = this._config.title || "";
+    title.style.width = "100%";
+    title.addEventListener("change", () => {
+      const v = title.value.trim();
+      const next = { ...this._config };
+      if (v) next.title = v;
+      else delete next.title;
+      this._config = next;
+      this._lastEmitted = JSON.stringify(next);
+      this.dispatchEvent(
+        new CustomEvent("config-changed", {
+          detail: { config: next },
+          bubbles: true,
+          composed: true,
+        }),
+      );
+    });
+    wrap.appendChild(title);
+
+    const hint = document.createElement("div");
+    hint.textContent = "Entities — reorder with the arrows, set an optional display name:";
+    hint.style.cssText = "font-size:0.82em;color:var(--secondary-text-color);";
+    wrap.appendChild(hint);
+
+    this._working.forEach((item, i) => wrap.appendChild(this._row(item, i)));
+
+    const add = document.createElement("ha-entity-picker");
+    add.hass = this._hass;
+    add.label = "Add entity";
+    add.allowCustomEntity = false;
+    add.addEventListener("value-changed", (ev) => {
+      const id = ev.detail && ev.detail.value;
+      if (!id) return;
+      this._working.push({ entity: id });
+      this._emit();
+      this._build();
+    });
+    this._addPicker = add;
+    wrap.appendChild(add);
+
+    this.appendChild(wrap);
   }
 }
 
