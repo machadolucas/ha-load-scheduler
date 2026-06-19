@@ -140,13 +140,16 @@ const CARD_CSS = `
      tiles in a row share the row's height and look uniform. */
   .grid { display: grid; gap: 8px; padding: 0; align-items: stretch;
           grid-template-columns: repeat(auto-fill, minmax(138px, 1fr)); }
-  .tile { border: 1px solid var(--divider-color, rgba(127,127,127,0.25)); border-radius: 10px;
-          padding: 4px 8px 6px; cursor: pointer; background: var(--card-background-color);
-          transition: border-color 0.15s, box-shadow 0.15s; }
-  .tile:hover { border-color: var(--primary-color); }
-  .tile.selected { border-color: var(--primary-color);
-          box-shadow: 0 0 0 1px var(--primary-color) inset; }
-  .tile.missing { color: var(--error-color); cursor: default; font-size: 0.78em; }
+  /* Each tile is a real <ha-card>, so it inherits the active theme's card
+     background / border / radius / backdrop-filter. We add only the click
+     affordance, inner padding, and a primary border when hovered/selected. */
+  .tile { cursor: pointer; }
+  .tile:hover { --ha-card-border-color: var(--primary-color); }
+  .tile.selected { --ha-card-border-color: var(--primary-color);
+          box-shadow: 0 0 0 1px var(--primary-color); }
+  .tile.missing { color: var(--error-color); cursor: default; }
+  .tile .ti { padding: 5px 9px 7px; }
+  .tile.missing .ti { font-size: 0.78em; }
   /* Status row: dot + name (+ toggle). The 36px toggle sets the row height when
      present; tiles without one stay short. */
   .tile .top { display: flex; align-items: center; gap: 8px; }
@@ -173,9 +176,9 @@ const CARD_CSS = `
   .tile .line .lk { color: var(--secondary-text-color); }
   .tile .line .lv { font-variant-numeric: tabular-nums; white-space: nowrap; }
   .tile .muted { color: var(--secondary-text-color); }
-  .detail { margin: 8px 0 0; border: 1px solid var(--divider-color, rgba(127,127,127,0.25));
-          border-radius: 10px; padding: 6px 10px; background: var(--card-background-color);
-          font-variant-numeric: tabular-nums; }
+  /* The expanded schedule is its own <ha-card> too. */
+  .detail { display: block; margin: 8px 0 0; font-variant-numeric: tabular-nums; }
+  .detail .detail-body { padding: 6px 10px; }
   .detail-head { display: flex; align-items: center; justify-content: space-between; gap: 8px;
           margin-bottom: 3px; }
   .detail-name { font-weight: 600; font-size: 0.85em; }
@@ -283,7 +286,7 @@ class LoadSchedulerCard extends HTMLElement {
       // Not an on/off entity (e.g. unavailable, or a plain sensor): show state.
       body = `<div class="line"><span class="lv muted">${state}</span></div>`;
     }
-    return `<div class="tile basic">
+    return `<ha-card class="tile basic"><div class="ti">
       <div class="top">
         <span class="dot ${toggleable && isOn ? "on" : "off"}" title="${
           toggleable ? (isOn ? "on" : "off") : state
@@ -292,13 +295,16 @@ class LoadSchedulerCard extends HTMLElement {
         ${toggle}
       </div>
       ${body}
-    </div>`;
+    </div></ha-card>`;
   }
 
   _tile(item) {
     const entityId = item.entity;
     const st = this._hass.states[entityId];
-    if (!st) return `<div class="tile missing">${item.name || entityId} (unavailable)</div>`;
+    if (!st)
+      return `<ha-card class="tile missing"><div class="ti">${
+        item.name || entityId
+      } (unavailable)</div></ha-card>`;
     const a = st.attributes || {};
     // Anything that isn't one of our schedule sensors → a basic switch tile.
     if (!(Array.isArray(a.periods) && a.config && a.config.mode)) {
@@ -340,14 +346,16 @@ class LoadSchedulerCard extends HTMLElement {
         )}</span></div>`;
     }
 
-    return `<div class="tile${selected ? " selected" : ""}" data-tile="${entityId}">
+    return `<ha-card class="tile${
+      selected ? " selected" : ""
+    }" data-tile="${entityId}"><div class="ti">
       <div class="top">
         <span class="dot ${dc}" title="${DOT_LABEL[dc]}"></span>
         <span class="name">${name}</span>
         ${toggle}
       </div>
       ${body}
-    </div>`;
+    </div></ha-card>`;
   }
 
   // The single shared detail panel rendered below the grid for the selected tile.
@@ -375,11 +383,11 @@ class LoadSchedulerCard extends HTMLElement {
     if (a.scheduled_minutes) tot.push(`${fmtDuration(a.scheduled_minutes)} total`);
     if (a.est_cost) tot.push(`est ${sym}${a.est_cost.toFixed(2)}`);
     const totLine = tot.length ? `<div class="prow tot">${tot.join(" · ")}</div>` : "";
-    return `<div class="detail">
+    return `<ha-card class="detail"><div class="detail-body">
       <div class="detail-head">
         <span class="detail-name">${name} — schedule</span>
         <span class="close" data-close="1">✕</span>
-      </div>${rows}${totLine}</div>`;
+      </div>${rows}${totLine}</div></ha-card>`;
   }
 
   // Only (re)arm the auto-collapse timer when the selection actually changes —
@@ -467,14 +475,12 @@ class LoadSchedulerCard extends HTMLElement {
 
   _render() {
     if (!this._hass || !this._config) return;
-    if (!this._card) {
-      this._card = document.createElement("ha-card");
-      // The container is invisible — each tile is its own little card.
-      this._card.style.setProperty("--ha-card-background", "transparent");
-      this._card.style.setProperty("--ha-card-box-shadow", "none");
-      this._card.style.setProperty("--ha-card-border-width", "0");
-      this.appendChild(this._card);
-      this._card.addEventListener("click", (e) => this._onClick(e));
+    if (!this._root) {
+      // No outer ha-card: a plain, transparent container, so each tile is its
+      // own themed <ha-card> with no surrounding border.
+      this._root = document.createElement("div");
+      this.appendChild(this._root);
+      this._root.addEventListener("click", (e) => this._onClick(e));
     }
     const sig = this._signature();
     if (sig === this._sig) return; // nothing the card shows has changed
@@ -486,7 +492,7 @@ class LoadSchedulerCard extends HTMLElement {
     const grid = entities.length
       ? `<div class="grid">${entities.map((e) => this._tile(e)).join("")}</div>`
       : `<div class="hint">No Load Scheduler schedule sensors found — pick them in the card editor.</div>`;
-    this._card.innerHTML = `<style>${CARD_CSS}</style>${title}${grid}${this._detail()}`;
+    this._root.innerHTML = `<style>${CARD_CSS}</style>${title}${grid}${this._detail()}`;
   }
 }
 
