@@ -134,25 +134,29 @@ function registerCard(card) {
  * ------------------------------------------------------------------ */
 
 const CARD_CSS = `
-  .title { font-weight: 600; font-size: 0.92em; padding: 7px 10px 1px; }
-  .hint { color: var(--secondary-text-color); padding: 8px 10px; font-size: 0.82em; }
-  .grid { display: grid; gap: 6px; padding: 6px 10px 10px; align-items: start;
+  .title { font-weight: 600; font-size: 0.92em; padding: 0 2px 7px; }
+  .hint { color: var(--secondary-text-color); padding: 4px 2px; font-size: 0.82em; }
+  /* No outer padding (the container is transparent); align-items: stretch so all
+     tiles in a row share the row's height and look uniform. */
+  .grid { display: grid; gap: 8px; padding: 0; align-items: stretch;
           grid-template-columns: repeat(auto-fill, minmax(138px, 1fr)); }
   .tile { border: 1px solid var(--divider-color, rgba(127,127,127,0.25)); border-radius: 10px;
-          padding: 5px 8px 7px; cursor: pointer; background: var(--card-background-color);
+          padding: 4px 8px 6px; cursor: pointer; background: var(--card-background-color);
           transition: border-color 0.15s, box-shadow 0.15s; }
   .tile:hover { border-color: var(--primary-color); }
   .tile.selected { border-color: var(--primary-color);
           box-shadow: 0 0 0 1px var(--primary-color) inset; }
   .tile.missing { color: var(--error-color); cursor: default; font-size: 0.78em; }
-  .tile .top { display: flex; align-items: center; gap: 6px; min-height: 36px; }
+  /* Status row: dot + name (+ toggle). The 36px toggle sets the row height when
+     present; tiles without one stay short. */
+  .tile .top { display: flex; align-items: center; gap: 8px; }
   .tile .dot { width: 13px; height: 13px; border-radius: 50%;
           background: var(--disabled-text-color); flex: 0 0 auto; }
   .tile .dot.heating { background: #ff9800; animation: ls-glow 1.5s ease-in-out infinite; }
   .tile .dot.idle { background: #ffe082; }
   .tile .dot.on { background: var(--success-color, #4caf50); }
-  .tile .dlabel { font-size: 0.62em; text-transform: uppercase; letter-spacing: 0.06em;
-          color: var(--secondary-text-color); flex: 1 1 auto; }
+  .tile .name { flex: 1 1 auto; min-width: 0; font-weight: 600; font-size: 0.9em;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* Round, finger-sized on/off button (touch target ~36px). */
   .toggle { flex: 0 0 auto; cursor: pointer; user-select: none; width: 36px; height: 36px;
           border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
@@ -164,15 +168,13 @@ const CARD_CSS = `
           color: var(--text-primary-color, #fff); }
   .toggle:hover { border-color: var(--primary-color); }
   .toggle:active { transform: scale(0.92); }
-  .tile .name { font-weight: 600; font-size: 0.88em; margin: 4px 0 3px;
-          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tile .line { display: flex; justify-content: space-between; gap: 8px; font-size: 0.76em;
-          line-height: 1.5; }
+          line-height: 1.32; }
   .tile .line .lk { color: var(--secondary-text-color); }
   .tile .line .lv { font-variant-numeric: tabular-nums; white-space: nowrap; }
   .tile .muted { color: var(--secondary-text-color); }
-  .detail { margin: 0 10px 10px; border: 1px solid var(--divider-color, rgba(127,127,127,0.25));
-          border-radius: 10px; padding: 6px 10px; background: var(--secondary-background-color);
+  .detail { margin: 8px 0 0; border: 1px solid var(--divider-color, rgba(127,127,127,0.25));
+          border-radius: 10px; padding: 6px 10px; background: var(--card-background-color);
           font-variant-numeric: tabular-nums; }
   .detail-head { display: flex; align-items: center; justify-content: space-between; gap: 8px;
           margin-bottom: 3px; }
@@ -263,18 +265,13 @@ class LoadSchedulerCard extends HTMLElement {
     const state = st.state;
     const isOn = state === "on";
     const toggleable = isOn || state === "off";
-    let top;
+    let toggle = "";
     if (toggleable) {
-      top =
-        `<span class="dot ${isOn ? "on" : "off"}"></span>` +
-        `<span class="dlabel">${isOn ? "on" : "off"}</span>` +
+      toggle =
         `<span class="toggle ${isOn ? "on" : "off"}" data-action="toggle" ` +
         `data-entity="${entityId}" data-on="${isOn}" ` +
         `title="${isOn ? "Turn off" : "Turn on"}" role="button" ` +
         `aria-label="${isOn ? "Turn off" : "Turn on"}">${POWER_SVG}</span>`;
-    } else {
-      // Not an on/off entity (e.g. unavailable, or a plain sensor): show state.
-      top = `<span class="dot"></span><span class="dlabel">${state}</span>`;
     }
     let body = "";
     if (isOn && st.last_changed) {
@@ -282,10 +279,18 @@ class LoadSchedulerCard extends HTMLElement {
       body = `<div class="line"><span class="lk">On for</span><span class="lv">${fmtDuration(
         mins,
       )}</span></div>`;
+    } else if (!toggleable) {
+      // Not an on/off entity (e.g. unavailable, or a plain sensor): show state.
+      body = `<div class="line"><span class="lv muted">${state}</span></div>`;
     }
     return `<div class="tile basic">
-      <div class="top">${top}</div>
-      <div class="name">${name}</div>
+      <div class="top">
+        <span class="dot ${toggleable && isOn ? "on" : "off"}" title="${
+          toggleable ? (isOn ? "on" : "off") : state
+        }"></span>
+        <span class="name">${name}</span>
+        ${toggle}
+      </div>
       ${body}
     </div>`;
   }
@@ -306,14 +311,10 @@ class LoadSchedulerCard extends HTMLElement {
     const dc = dotClass(a);
     const selected = this._selected === entityId;
 
-    let top;
-    if (informational) {
-      // Display-only load: a plain status dot, no on/off control.
-      top = `<span class="dot ${dc}"></span><span class="dlabel"></span>`;
-    } else {
+    let toggle = "";
+    if (!informational) {
       const on = a.active === true;
-      top =
-        `<span class="dot ${dc}"></span><span class="dlabel">${DOT_LABEL[dc]}</span>` +
+      toggle =
         `<span class="toggle ${on ? "on" : "off"}" data-action="toggle" ` +
         `data-entity="${controlled}" data-on="${on}" ` +
         `title="${on ? "Turn off" : "Turn on"}" role="button" ` +
@@ -322,16 +323,12 @@ class LoadSchedulerCard extends HTMLElement {
 
     let body;
     if (informational) {
-      const next =
+      body =
         st.state && st.state !== "unknown" && st.state !== "unavailable"
           ? `<div class="line"><span class="lk">Next</span><span class="lv">${fmtClock(
               st.state,
-            )}</span></div>` +
-            `<div class="line"><span class="lk"></span><span class="lv">${fmtRelative(
-              st.state,
-            )}</span></div>`
+            )} · ${fmtRelative(st.state)}</span></div>`
           : `<div class="line"><span class="lv muted">no run scheduled</span></div>`;
-      body = next;
     } else {
       body =
         `<div class="line"><span class="lk">Target</span><span class="lv">${this._targetText(
@@ -344,8 +341,11 @@ class LoadSchedulerCard extends HTMLElement {
     }
 
     return `<div class="tile${selected ? " selected" : ""}" data-tile="${entityId}">
-      <div class="top">${top}</div>
-      <div class="name">${name}</div>
+      <div class="top">
+        <span class="dot ${dc}" title="${DOT_LABEL[dc]}"></span>
+        <span class="name">${name}</span>
+        ${toggle}
+      </div>
       ${body}
     </div>`;
   }
@@ -424,13 +424,61 @@ class LoadSchedulerCard extends HTMLElement {
     }
   }
 
+  // A compact string of everything the output depends on. HA fires `set hass`
+  // on every unrelated state change; rebuilding innerHTML each time destroys the
+  // DOM mid-hover/click (flicker + missed clicks). We rebuild only when this
+  // changes — plus a 1-minute bucket so relative times still tick.
+  _signature() {
+    const parts = [
+      JSON.stringify(this._config),
+      this._selected || "",
+      Math.floor(Date.now() / 60000),
+    ];
+    for (const it of this._entities()) {
+      const st = this._hass.states[it.entity];
+      if (!st) {
+        parts.push(`${it.entity}:missing`);
+        continue;
+      }
+      const a = st.attributes || {};
+      const c = a.config || {};
+      const periods = a.periods || [];
+      parts.push(
+        [
+          it.entity,
+          it.name || "",
+          st.state,
+          a.active,
+          a.heating,
+          a.running,
+          a.friendly_name,
+          a.target_minutes,
+          a.delivered_minutes,
+          a.scheduled_minutes,
+          a.est_cost,
+          c.controlled_entity,
+          c.mode,
+          periods.map((p) => `${p.start}-${p.end}`).join(","),
+        ].join("|"),
+      );
+    }
+    return parts.join("§");
+  }
+
   _render() {
     if (!this._hass || !this._config) return;
     if (!this._card) {
       this._card = document.createElement("ha-card");
+      // The container is invisible — each tile is its own little card.
+      this._card.style.setProperty("--ha-card-background", "transparent");
+      this._card.style.setProperty("--ha-card-box-shadow", "none");
+      this._card.style.setProperty("--ha-card-border-width", "0");
       this.appendChild(this._card);
       this._card.addEventListener("click", (e) => this._onClick(e));
     }
+    const sig = this._signature();
+    if (sig === this._sig) return; // nothing the card shows has changed
+    this._sig = sig;
     const title = this._config.title
       ? `<div class="title">${this._config.title}</div>`
       : "";
