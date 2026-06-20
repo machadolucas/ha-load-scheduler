@@ -187,10 +187,18 @@ const CARD_CSS = `
   .detail .prow.tot { color: var(--secondary-text-color); margin-top: 3px; }
   .detail .prow.muted { color: var(--secondary-text-color); }
   /* 24h activity timeline (history-graph style), colours matching the statuses. */
-  .tlwrap { margin-top: 7px; }
+  .tlwrap { margin-top: 7px; position: relative; }
   .tl { display: flex; height: 14px; border-radius: 7px; overflow: hidden;
-          background: var(--divider-color, rgba(127,127,127,0.25)); }
+          background: var(--divider-color, rgba(127,127,127,0.25)); cursor: pointer; }
   .tl .seg { display: block; min-width: 0; }
+  .tltip { position: absolute; bottom: 22px; transform: translateX(-50%);
+          background: var(--secondary-background-color, #333);
+          color: var(--primary-text-color); border-radius: 6px; padding: 3px 8px;
+          font-size: 0.72em; line-height: 1.35; white-space: nowrap; pointer-events: none;
+          border: 1px solid var(--divider-color, rgba(127,127,127,0.4));
+          box-shadow: 0 2px 8px rgba(0,0,0,0.3); z-index: 3; }
+  .tltip[hidden] { display: none; }
+  .tltip .tipst { display: block; font-weight: 600; text-transform: capitalize; }
   .tl .seg.heating { background: #ff9800; }
   .tl .seg.idle { background: #ffe082; }
   .tl .seg.on { background: var(--success-color, #4caf50); }
@@ -427,13 +435,15 @@ class LoadSchedulerCard extends HTMLElement {
     const segs = h.segments
       .map((s) => {
         const dur = Math.max(0, s.end - s.start);
-        const lbl = `${fmtClock(new Date(s.start).toISOString())}–${fmtClock(
+        const range = `${fmtClock(new Date(s.start).toISOString())} – ${fmtClock(
           new Date(s.end).toISOString(),
-        )} · ${s.status}`;
-        return `<span class="seg ${s.status}" style="flex:${dur}" title="${lbl}"></span>`;
+        )}`;
+        return `<span class="seg ${s.status}" style="flex:${dur}" data-status="${s.status}" data-range="${range}"></span>`;
       })
       .join("");
+    // The tooltip is positioned/filled on hover or tap (see _showTip).
     return `<div class="tlwrap"><div class="tl">${segs}</div>
+      <div class="tltip" hidden></div>
       <div class="tlcap"><span>${span} ago</span><span>now</span></div></div>`;
   }
 
@@ -552,6 +562,7 @@ class LoadSchedulerCard extends HTMLElement {
   _select(id) {
     this._selected = id;
     this._historyData = null; // show "loading" until the fetch returns
+    this._tipPinned = false;
     if (this._timer) {
       clearTimeout(this._timer);
       this._timer = null;
@@ -568,6 +579,18 @@ class LoadSchedulerCard extends HTMLElement {
   }
 
   _onClick(e) {
+    // Tap on a timeline segment → pin its tooltip (touch-friendly). Tap anywhere
+    // else first dismisses a pinned tooltip.
+    const seg = e.target.closest(".seg");
+    if (seg) {
+      this._tipPinned = true;
+      this._showTip(seg, null);
+      return;
+    }
+    if (this._tipPinned) {
+      this._tipPinned = false;
+      this._hideTip();
+    }
     const toggle = e.target.closest("[data-action]");
     if (toggle) {
       e.stopPropagation(); // never open the detail panel from the on/off button
@@ -589,6 +612,37 @@ class LoadSchedulerCard extends HTMLElement {
       const id = tile.dataset.tile;
       this._select(this._selected === id ? null : id);
     }
+  }
+
+  // Fill + position the activity-timeline tooltip over a segment. ``clientX``
+  // follows the cursor on hover; null centres it on the segment (tap).
+  _showTip(seg, clientX) {
+    if (!this._root) return;
+    const wrap = this._root.querySelector(".tlwrap");
+    const tip = wrap && wrap.querySelector(".tltip");
+    if (!tip) return;
+    tip.innerHTML =
+      `<span class="tipst">${seg.dataset.status}</span>` + `${seg.dataset.range}`;
+    const wr = wrap.getBoundingClientRect();
+    const sr = seg.getBoundingClientRect();
+    const x = (clientX != null ? clientX : sr.left + sr.width / 2) - wr.left;
+    tip.hidden = false;
+    const half = tip.offsetWidth / 2;
+    tip.style.left = `${Math.max(half + 2, Math.min(x, wr.width - half - 2))}px`;
+  }
+
+  _hideTip() {
+    const tip = this._root && this._root.querySelector(".tltip");
+    if (tip) tip.hidden = true;
+  }
+
+  _onPointerMove(e) {
+    if (e.pointerType === "touch") return; // touch uses tap-to-pin
+    const tip = this._root && this._root.querySelector(".tltip");
+    if (!tip) return;
+    const seg = e.target.closest && e.target.closest(".seg");
+    if (seg) this._showTip(seg, e.clientX);
+    else if (!this._tipPinned) tip.hidden = true;
   }
 
   // A compact string of everything the output depends on. HA fires `set hass`
@@ -640,6 +694,10 @@ class LoadSchedulerCard extends HTMLElement {
       this._root = document.createElement("div");
       this.appendChild(this._root);
       this._root.addEventListener("click", (e) => this._onClick(e));
+      this._root.addEventListener("pointermove", (e) => this._onPointerMove(e));
+      this._root.addEventListener("pointerleave", () => {
+        if (!this._tipPinned) this._hideTip();
+      });
     }
     const sig = this._signature();
     if (sig === this._sig) return; // nothing the card shows has changed
