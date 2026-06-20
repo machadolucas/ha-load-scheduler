@@ -144,6 +144,9 @@ class LoadScheduleSensor(LoadSchedulerEntity, SensorEntity):
                 "temp_min": cfg.temp_min if cfg.temp_entity else None,
                 "controlled_entity": cfg.controlled_entity,
                 "feedback_entity": cfg.feedback_entity,
+                # The card thresholds the feedback power history to split
+                # heating vs idle on its activity timeline.
+                "feedback_idle_w": cfg.feedback_idle_w if cfg.feedback_entity else None,
                 "temp_entity": cfg.temp_entity,
                 "delivered_entity": cfg.delivered_entity,
             },

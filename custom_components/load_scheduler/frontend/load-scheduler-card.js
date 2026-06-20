@@ -150,25 +150,24 @@ const CARD_CSS = `
   .tile.missing { color: var(--error-color); cursor: default; }
   .tile .ti { padding: 5px 9px 7px; }
   .tile.missing .ti { font-size: 0.78em; }
-  /* Status row: dot + name (+ toggle). The 36px toggle sets the row height when
-     present; tiles without one stay short. */
+  /* Status row: name (+ toggle). */
   .tile .top { display: flex; align-items: center; gap: 8px; }
-  .tile .dot { width: 13px; height: 13px; border-radius: 50%;
-          background: var(--disabled-text-color); flex: 0 0 auto; }
-  .tile .dot.heating { background: #ff9800; animation: ls-glow 1.5s ease-in-out infinite; }
-  .tile .dot.idle { background: #ffe082; }
-  .tile .dot.on { background: var(--success-color, #4caf50); }
   .tile .name { flex: 1 1 auto; min-width: 0; font-weight: 600; font-size: 0.9em;
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  /* Round, finger-sized on/off button (touch target ~36px). */
+  /* Round, finger-sized on/off button (touch target ~36px). The button doubles
+     as the status indicator: its fill is the status colour (heating/idle/on),
+     transparent when off — so there's no separate dot. */
   .toggle { flex: 0 0 auto; cursor: pointer; user-select: none; width: 36px; height: 36px;
           border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
           border: 1.5px solid var(--divider-color, rgba(127,127,127,0.5));
-          background: var(--card-background-color); color: var(--secondary-text-color);
+          background: transparent; color: var(--secondary-text-color);
           transition: background 0.15s, border-color 0.15s, transform 0.1s; }
   .toggle svg { width: 18px; height: 18px; }
-  .toggle.on { background: var(--primary-color); border-color: var(--primary-color);
-          color: var(--text-primary-color, #fff); }
+  .toggle.heating { background: #ff9800; border-color: #ff9800; color: #fff;
+          animation: ls-glow 1.5s ease-in-out infinite; }
+  .toggle.idle { background: #ffe082; border-color: #ffe082; color: #333; }
+  .toggle.on { background: var(--success-color, #4caf50);
+          border-color: var(--success-color, #4caf50); color: #fff; }
   .toggle:hover { border-color: var(--primary-color); }
   .toggle:active { transform: scale(0.92); }
   .tile .line { display: flex; justify-content: space-between; gap: 8px; font-size: 0.76em;
@@ -187,6 +186,18 @@ const CARD_CSS = `
   .detail .prow { font-size: 0.78em; line-height: 1.5; }
   .detail .prow.tot { color: var(--secondary-text-color); margin-top: 3px; }
   .detail .prow.muted { color: var(--secondary-text-color); }
+  /* 24h activity timeline (history-graph style), colours matching the statuses. */
+  .tlwrap { margin-top: 7px; }
+  .tl { display: flex; height: 14px; border-radius: 7px; overflow: hidden;
+          background: var(--divider-color, rgba(127,127,127,0.25)); }
+  .tl .seg { display: block; min-width: 0; }
+  .tl .seg.heating { background: #ff9800; }
+  .tl .seg.idle { background: #ffe082; }
+  .tl .seg.on { background: var(--success-color, #4caf50); }
+  .tl .seg.off { background: transparent; }
+  .tlcap { display: flex; justify-content: space-between; font-size: 0.66em;
+          color: var(--secondary-text-color); margin-top: 2px; }
+  .tlload { font-size: 0.78em; color: var(--secondary-text-color); margin-top: 7px; }
   @keyframes ls-glow {
     0%, 100% { box-shadow: 0 0 0 0 rgba(255,152,0,0.5); }
     50% { box-shadow: 0 0 8px 3px rgba(255,152,0,0.6); }
@@ -268,12 +279,13 @@ class LoadSchedulerCard extends HTMLElement {
     const state = st.state;
     const isOn = state === "on";
     const toggleable = isOn || state === "off";
+    const selected = this._selected === entityId;
     let toggle = "";
     if (toggleable) {
       toggle =
         `<span class="toggle ${isOn ? "on" : "off"}" data-action="toggle" ` +
-        `data-entity="${entityId}" data-on="${isOn}" ` +
-        `title="${isOn ? "Turn off" : "Turn on"}" role="button" ` +
+        `data-entity="${entityId}" data-on="${isOn}" role="button" ` +
+        `title="${isOn ? "on" : "off"} · tap to turn ${isOn ? "off" : "on"}" ` +
         `aria-label="${isOn ? "Turn off" : "Turn on"}">${POWER_SVG}</span>`;
     }
     let body = "";
@@ -286,11 +298,10 @@ class LoadSchedulerCard extends HTMLElement {
       // Not an on/off entity (e.g. unavailable, or a plain sensor): show state.
       body = `<div class="line"><span class="lv muted">${state}</span></div>`;
     }
-    return `<ha-card class="tile basic"><div class="ti">
+    return `<ha-card class="tile basic${
+      selected ? " selected" : ""
+    }" data-tile="${entityId}"><div class="ti">
       <div class="top">
-        <span class="dot ${toggleable && isOn ? "on" : "off"}" title="${
-          toggleable ? (isOn ? "on" : "off") : state
-        }"></span>
         <span class="name">${name}</span>
         ${toggle}
       </div>
@@ -321,9 +332,9 @@ class LoadSchedulerCard extends HTMLElement {
     if (!informational) {
       const on = a.active === true;
       toggle =
-        `<span class="toggle ${on ? "on" : "off"}" data-action="toggle" ` +
-        `data-entity="${controlled}" data-on="${on}" ` +
-        `title="${on ? "Turn off" : "Turn on"}" role="button" ` +
+        `<span class="toggle ${dc}" data-action="toggle" ` +
+        `data-entity="${controlled}" data-on="${on}" role="button" ` +
+        `title="${DOT_LABEL[dc]} · tap to turn ${on ? "off" : "on"}" ` +
         `aria-label="${on ? "Turn off" : "Turn on"}">${POWER_SVG}</span>`;
     }
 
@@ -350,7 +361,6 @@ class LoadSchedulerCard extends HTMLElement {
       selected ? " selected" : ""
     }" data-tile="${entityId}"><div class="ti">
       <div class="top">
-        <span class="dot ${dc}" title="${DOT_LABEL[dc]}"></span>
         <span class="name">${name}</span>
         ${toggle}
       </div>
@@ -358,7 +368,8 @@ class LoadSchedulerCard extends HTMLElement {
     </div></ha-card>`;
   }
 
-  // The single shared detail panel rendered below the grid for the selected tile.
+  // The single shared detail panel rendered below the grid for the selected tile:
+  // the upcoming schedule (scheduler loads) plus a 24h activity timeline.
   _detail() {
     if (!this._selected) return "";
     const st = this._hass.states[this._selected];
@@ -367,38 +378,186 @@ class LoadSchedulerCard extends HTMLElement {
     const item = this._entities().find((e) => e.entity === this._selected);
     const name =
       (item && item.name) || (a.friendly_name || this._selected).replace(/\s*schedule$/i, "");
-    const sym = currencySymbol(this._hass);
-    const ps = a.periods || [];
-    const rows = ps.length
-      ? ps
-          .map((p) => {
-            const mins = (new Date(p.end) - new Date(p.start)) / 60000;
-            return `<div class="prow">${fmtClock(p.start)} → ${fmtClock(p.end)} · ${fmtDuration(
-              mins,
-            )}</div>`;
-          })
-          .join("")
-      : `<div class="prow muted">No runs scheduled.</div>`;
-    const tot = [];
-    if (a.scheduled_minutes) tot.push(`${fmtDuration(a.scheduled_minutes)} total`);
-    if (a.est_cost) tot.push(`est ${sym}${a.est_cost.toFixed(2)}`);
-    const totLine = tot.length ? `<div class="prow tot">${tot.join(" · ")}</div>` : "";
+    const isScheduler = Array.isArray(a.periods) && a.config && a.config.mode;
+    let inner = "";
+    if (isScheduler) {
+      const sym = currencySymbol(this._hass);
+      const ps = a.periods || [];
+      inner += ps.length
+        ? ps
+            .map((p) => {
+              const mins = (new Date(p.end) - new Date(p.start)) / 60000;
+              return `<div class="prow">${fmtClock(p.start)} → ${fmtClock(p.end)} · ${fmtDuration(
+                mins,
+              )}</div>`;
+            })
+            .join("")
+        : `<div class="prow muted">No runs scheduled.</div>`;
+      const tot = [];
+      if (a.scheduled_minutes) tot.push(`${fmtDuration(a.scheduled_minutes)} total`);
+      if (a.est_cost) tot.push(`est ${sym}${a.est_cost.toFixed(2)}`);
+      if (tot.length) inner += `<div class="prow tot">${tot.join(" · ")}</div>`;
+    }
+    inner += this._timelineHtml();
     return `<ha-card class="detail"><div class="detail-body">
       <div class="detail-head">
-        <span class="detail-name">${name} — schedule</span>
+        <span class="detail-name">${name} — ${isScheduler ? "schedule" : "activity"}</span>
         <span class="close" data-close="1">✕</span>
-      </div>${rows}${totLine}</div></ha-card>`;
+      </div>${inner}</div></ha-card>`;
+  }
+
+  _historyHours() {
+    const h = Number(this._config.history_hours);
+    return h > 0 ? Math.min(h, 168) : 24;
+  }
+
+  // The on/off (and, for a heater, heating/idle) timeline bar for the selection.
+  _timelineHtml() {
+    const hours = this._historyHours();
+    const span = fmtDuration(hours * 60);
+    const h = this._historyData;
+    if (h && h.id === this._selected && h.none) return ""; // nothing to chart
+    if (!h || h.id !== this._selected) {
+      return `<div class="tlload">Loading last ${span} of activity…</div>`;
+    }
+    if (h.error) return `<div class="tlload">Activity history unavailable.</div>`;
+    if (!h.segments || !h.segments.length) {
+      return `<div class="tlload">No activity in the last ${span}.</div>`;
+    }
+    const segs = h.segments
+      .map((s) => {
+        const dur = Math.max(0, s.end - s.start);
+        const lbl = `${fmtClock(new Date(s.start).toISOString())}–${fmtClock(
+          new Date(s.end).toISOString(),
+        )} · ${s.status}`;
+        return `<span class="seg ${s.status}" style="flex:${dur}" title="${lbl}"></span>`;
+      })
+      .join("");
+    return `<div class="tlwrap"><div class="tl">${segs}</div>
+      <div class="tlcap"><span>${span} ago</span><span>now</span></div></div>`;
+  }
+
+  // Which real entities back the timeline, and how to read their status.
+  _historyEntities(selectedId) {
+    const st = this._hass.states[selectedId];
+    if (!st) return null;
+    const a = st.attributes || {};
+    const c = a.config || {};
+    if (Array.isArray(a.periods) && c.mode) {
+      if (!c.controlled_entity) return null; // informational: nothing to chart
+      return {
+        controlled: c.controlled_entity,
+        feedback: c.feedback_entity || null,
+        idleW: Number(c.feedback_idle_w) || 0,
+        mode: "scheduler",
+      };
+    }
+    return { controlled: selectedId, feedback: null, idleW: 0, mode: "basic" };
+  }
+
+  async _loadHistory(selectedId) {
+    const info = this._historyEntities(selectedId);
+    if (!info) {
+      this._historyData = { id: selectedId, none: true };
+      return;
+    }
+    const hours = this._historyHours();
+    const end = new Date();
+    const start = new Date(end.getTime() - hours * 3600000);
+    const ids = info.feedback ? [info.controlled, info.feedback] : [info.controlled];
+    let data;
+    try {
+      const res = await this._hass.callWS({
+        type: "history/history_during_period",
+        start_time: start.toISOString(),
+        end_time: end.toISOString(),
+        entity_ids: ids,
+        minimal_response: true,
+        no_attributes: true,
+        significant_changes_only: true,
+      });
+      if (this._selected !== selectedId) return; // selection changed mid-fetch
+      const ctrl = this._normSeries(res[info.controlled]);
+      const fb = info.feedback ? this._normSeries(res[info.feedback]) : null;
+      data = {
+        id: selectedId,
+        segments: this._buildSegments(start.getTime(), end.getTime(), ctrl, fb, info),
+      };
+    } catch (err) {
+      data = { id: selectedId, error: true };
+    }
+    if (this._selected !== selectedId) return;
+    this._historyData = data;
+    this._sig = null; // force a one-off rebuild to show the timeline
+    this._render();
+  }
+
+  // Compressed history rows → time-ordered [{t(ms), state}].
+  _normSeries(arr) {
+    if (!Array.isArray(arr)) return [];
+    const out = [];
+    for (const e of arr) {
+      const state = e.s != null ? e.s : e.state;
+      if (state == null) continue;
+      let t;
+      if (e.lc != null) t = e.lc * 1000;
+      else if (e.lu != null) t = e.lu * 1000;
+      else if (e.last_changed) t = Date.parse(e.last_changed);
+      else if (e.last_updated) t = Date.parse(e.last_updated);
+      else continue;
+      out.push({ t, state });
+    }
+    out.sort((x, y) => x.t - y.t);
+    return out;
+  }
+
+  // Merge the controlled (on/off) and feedback (power) step-functions into
+  // off / idle / heating (or plain on/off for a basic switch) segments.
+  _buildSegments(start, end, ctrl, fb, info) {
+    const times = new Set([start]);
+    for (const e of ctrl) if (e.t > start && e.t < end) times.add(e.t);
+    if (fb) for (const e of fb) if (e.t > start && e.t < end) times.add(e.t);
+    const sorted = [...times].sort((a, b) => a - b);
+    sorted.push(end);
+    const valAt = (series, t) => {
+      let v = null;
+      for (const e of series) {
+        if (e.t <= t) v = e.state;
+        else break;
+      }
+      return v;
+    };
+    const segs = [];
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const t0 = sorted[i];
+      const t1 = sorted[i + 1];
+      if (t1 <= t0) continue;
+      const on = valAt(ctrl, t0) === "on";
+      let status;
+      if (!on) status = "off";
+      else if (info.mode === "basic") status = "on";
+      else if (fb) {
+        const p = parseFloat(valAt(fb, t0));
+        status = !isNaN(p) && p >= info.idleW ? "heating" : "idle";
+      } else status = "heating";
+      const last = segs[segs.length - 1];
+      if (last && last.status === status) last.end = t1;
+      else segs.push({ start: t0, end: t1, status });
+    }
+    return segs;
   }
 
   // Only (re)arm the auto-collapse timer when the selection actually changes —
   // `_render` runs on every (frequent) hass update and must not reset it.
   _select(id) {
     this._selected = id;
+    this._historyData = null; // show "loading" until the fetch returns
     if (this._timer) {
       clearTimeout(this._timer);
       this._timer = null;
     }
     if (id) {
+      this._loadHistory(id); // async; re-renders the timeline when ready
       this._timer = setTimeout(() => {
         this._selected = null;
         this._timer = null;
@@ -1143,6 +1302,29 @@ class LoadSchedulerCardEditor extends HTMLElement {
       );
     });
     wrap.appendChild(title);
+
+    const hours = document.createElement("ha-textfield");
+    hours.label = "Activity timeline hours";
+    hours.type = "number";
+    hours.value = this._config.history_hours != null ? String(this._config.history_hours) : "";
+    hours.placeholder = "24";
+    hours.style.width = "100%";
+    hours.addEventListener("change", () => {
+      const v = parseFloat(hours.value);
+      const next = { ...this._config };
+      if (v > 0) next.history_hours = v;
+      else delete next.history_hours;
+      this._config = next;
+      this._lastEmitted = JSON.stringify(next);
+      this.dispatchEvent(
+        new CustomEvent("config-changed", {
+          detail: { config: next },
+          bubbles: true,
+          composed: true,
+        }),
+      );
+    });
+    wrap.appendChild(hours);
 
     const hint = document.createElement("div");
     hint.textContent = "Entities — reorder with the arrows, set an optional display name:";

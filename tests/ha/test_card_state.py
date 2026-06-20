@@ -144,6 +144,7 @@ async def test_schedule_sensor_rationale_attributes(hass: HomeAssistant) -> None
     assert cfg["cap"] is None
     assert cfg["controlled_entity"] == "switch.heater"
     assert cfg["feedback_entity"] == "sensor.heater_power"
+    assert cfg["feedback_idle_w"] == 50  # card uses this to split heating vs idle
 
     # Delivered-today shrinks the remaining target (dynamic remaining). Pin the
     # measurement timestamp so the throttled recorder refresh doesn't overwrite.
