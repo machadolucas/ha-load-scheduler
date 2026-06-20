@@ -199,6 +199,11 @@ const CARD_CSS = `
           box-shadow: 0 2px 8px rgba(0,0,0,0.3); z-index: 3; }
   .tltip[hidden] { display: none; }
   .tltip .tipst { display: block; font-weight: 600; text-transform: capitalize; }
+  .tltip .tipdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+          margin-right: 5px; vertical-align: middle; background: var(--disabled-text-color); }
+  .tltip .tipdot.heating { background: #ff9800; }
+  .tltip .tipdot.idle { background: #ffe082; }
+  .tltip .tipdot.on { background: var(--success-color, #4caf50); }
   .tl .seg.heating { background: #ff9800; }
   .tl .seg.idle { background: #ffe082; }
   .tl .seg.on { background: var(--success-color, #4caf50); }
@@ -621,8 +626,10 @@ class LoadSchedulerCard extends HTMLElement {
     const wrap = this._root.querySelector(".tlwrap");
     const tip = wrap && wrap.querySelector(".tltip");
     if (!tip) return;
+    const status = seg.dataset.status;
     tip.innerHTML =
-      `<span class="tipst">${seg.dataset.status}</span>` + `${seg.dataset.range}`;
+      `<span class="tipst"><span class="tipdot ${status}"></span>${status}</span>` +
+      `${seg.dataset.range}`;
     const wr = wrap.getBoundingClientRect();
     const sr = seg.getBoundingClientRect();
     const x = (clientX != null ? clientX : sr.left + sr.width / 2) - wr.left;
