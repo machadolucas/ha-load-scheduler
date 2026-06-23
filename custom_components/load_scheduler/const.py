@@ -81,9 +81,11 @@ CONF_BASELINE_ENTITY = "baseline_entity"  # consumption sensor → hour-of-day p
 # Hub real-time divert settings.
 CONF_NET_ENERGY_ENTITY = "net_energy_entity"  # live net energy; negative = export
 # Optional predicted end-of-interval net energy (e.g. extrapolated over the
-# current 15-min metering interval). When set, divert only turns a load ON when
-# BOTH the current and the predicted net show export — the interval-aware
-# "don't start a load we won't still be exporting for" gate.
+# current 15-min metering interval). When set, divert drives BOTH its engage and
+# shed decisions off this projection (load-aware, see divert.decide_divert): a
+# load is only engaged if its own projected draw still leaves the interval
+# closing in export. Without it, divert falls back to the reactive
+# accumulated-net deadband.
 CONF_PREDICTED_NET_ENERGY_ENTITY = "predicted_net_energy_entity"
 CONF_NET_EXPORT_THRESHOLD = "net_export_threshold"  # export beyond this triggers divert
 CONF_LIVE_SELL_ENTITY = "live_sell_entity"  # live sell price (optional gate)
@@ -93,7 +95,16 @@ DEFAULT_SELL_THRESHOLD = 0.05
 
 # Real-time control timing.
 MANUAL_OVERRIDE_GRACE_S = 600  # back off this long after a foreign (manual) change
-DIVERT_MIN_DWELL_S = 120  # min time before flipping a divert decision (anti-thrash)
+# Asymmetric anti-thrash dwell: slow to engage (protects relays), quick to shed
+# (so a mispredicted import doesn't linger). Relay protection comes from the
+# predictive accuracy + hysteresis, not from a long dwell — a shorter dwell would
+# only mean *more* flips. The accumulated-net fallback path uses the engage dwell.
+DIVERT_ENGAGE_DWELL_S = 120
+DIVERT_SHED_DWELL_S = 30
+# kWh of projected interval-close net import tolerated before shedding. 0 = shed
+# as soon as the interval is projected to import; raise to trade a little import
+# for fewer shed events.
+DIVERT_SHED_MARGIN = 0.0
 
 # Schedule modes (string values match engine.ScheduleMode).
 MODE_NON_SEQUENTIAL = "non_sequential"

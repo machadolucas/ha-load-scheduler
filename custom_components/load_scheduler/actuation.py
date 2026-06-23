@@ -54,12 +54,15 @@ from .const import (
     CONF_SELL_THRESHOLD,
     DEFAULT_NET_EXPORT_THRESHOLD,
     DEFAULT_SELL_THRESHOLD,
-    DIVERT_MIN_DWELL_S,
+    DIVERT_ENGAGE_DWELL_S,
+    DIVERT_SHED_DWELL_S,
+    DIVERT_SHED_MARGIN,
     EVENT_RUN_ENDED,
     EVENT_RUN_STARTED,
     MANUAL_OVERRIDE_GRACE_S,
 )
 from .coordinator import LoadSchedulerCoordinator
+from .divert import DivertCandidate, decide_divert
 from .models import LoadConfig
 
 _LOGGER = logging.getLogger(__name__)
@@ -213,7 +216,13 @@ class LoadActuator:
 
     @callback
     def _update_divert(self) -> None:
-        """Fill/drain the diverted set as live export surplus swings."""
+        """Fill/drain the diverted set as live export surplus swings.
+
+        With a predicted end-of-interval net sensor configured, engage and shed
+        decisions are driven off that projection (load-aware — see
+        :func:`divert.decide_divert`); otherwise fall back to a reactive deadband
+        on the live accumulated net.
+        """
         if not self._net_entity:
             return
         net = _as_float(self._hass.states.get(self._net_entity))
@@ -224,14 +233,6 @@ class LoadActuator:
         if self._live_sell_entity:
             sell = _as_float(self._hass.states.get(self._live_sell_entity))
             sell_ok = sell is not None and sell < self._sell_threshold
-
-        # Interval-aware gate: only *start* a load when the predicted end-of-interval
-        # net is also exporting, so we don't begin a run we won't still be exporting
-        # for by the close of the 15-min metering interval.
-        predicted_ok = True
-        if self._predicted_net_entity:
-            pred = _as_float(self._hass.states.get(self._predicted_net_entity))
-            predicted_ok = pred is not None and pred < -self._net_export_threshold
 
         # Drop any diverted loads that are no longer eligible (disabled, manual
         # override). A load that is on but idle (e.g. a full tank) is deliberately
@@ -245,9 +246,68 @@ class LoadActuator:
         }
 
         now = dt_util.utcnow()
+        if self._predicted_net_entity:
+            self._update_divert_predicted(now, sell_ok)
+        else:
+            self._update_divert_reactive(now, net, sell_ok)
+
+    def _update_divert_predicted(self, now: datetime, sell_ok: bool) -> None:
+        """Engage/shed off the predicted interval-close net (load-aware)."""
+        predicted_net = _as_float(self._hass.states.get(self._predicted_net_entity))
+        if predicted_net is None:
+            return
+
+        elapsed = (
+            None
+            if self._last_divert_change is None
+            else (now - self._last_divert_change).total_seconds()
+        )
+        can_engage = elapsed is None or elapsed >= DIVERT_ENGAGE_DWELL_S
+        can_shed = elapsed is None or elapsed >= DIVERT_SHED_DWELL_S
+
+        # Energy a not-yet-running load would draw over the rest of the metering
+        # interval — what decides whether it "fits" the projected export. 15
+        # divides every real UTC offset, so the boundary is correct in any tz.
+        minutes_left = 15 - (now.minute % 15) - now.second / 60.0
+
+        candidates: list[DivertCandidate] = []
+        for sid in self._coordinator.config_entry.subentries:
+            if sid in self._diverted:
+                continue
+            cfg = self._coordinator.load_config(sid)
+            if not self._eligible_for_divert(sid, cfg):
+                continue
+            candidates.append(
+                DivertCandidate(
+                    sid=sid,
+                    priority=cfg.priority,
+                    projected_energy=(cfg.draw_kw or 0.0) * minutes_left / 60.0,
+                )
+            )
+        diverted = [(sid, self._coordinator.load_config(sid).priority) for sid in self._diverted]
+
+        decision = decide_divert(
+            predicted_net=predicted_net,
+            diverted=diverted,
+            candidates=candidates,
+            engage_buffer=self._net_export_threshold,
+            shed_margin=DIVERT_SHED_MARGIN,
+            sell_ok=sell_ok,
+            can_engage=can_engage,
+            can_shed=can_shed,
+        )
+        if decision.add is not None:
+            self._diverted.add(decision.add)
+            self._last_divert_change = now
+        elif decision.remove is not None:
+            self._diverted.discard(decision.remove)
+            self._last_divert_change = now
+
+    def _update_divert_reactive(self, now: datetime, net: float, sell_ok: bool) -> None:
+        """Fallback with no predicted-net sensor: react to the live accumulated net."""
         if (
             self._last_divert_change is not None
-            and (now - self._last_divert_change).total_seconds() < DIVERT_MIN_DWELL_S
+            and (now - self._last_divert_change).total_seconds() < DIVERT_ENGAGE_DWELL_S
         ):
             return  # anti-thrash dwell
 
@@ -257,7 +317,7 @@ class LoadActuator:
         def priority(sid: str) -> int:
             return self._coordinator.load_config(sid).priority
 
-        if exporting and sell_ok and predicted_ok:
+        if exporting and sell_ok:
             candidates = [
                 sid
                 for sid in self._coordinator.config_entry.subentries

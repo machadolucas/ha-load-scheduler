@@ -70,13 +70,22 @@ solar entity ─┘ solar_source + baseline → excess ───┤
   plan, so an override shows the truth.
 - **Solar excess** = forecast PV − baseline; allocated to loads highest-priority
   first against a shared residual so no kWh is double-counted.
-- **Real-time divert** uses the accumulated current-interval net-energy sensor
-  (negative = export): add the highest-priority eligible load when exporting past
-  the threshold and the live sell price is below its gate; shed the lowest-priority
-  when importing. An optional **predicted end-of-interval net** sensor gates the
-  *turn-on* (both live and predicted must show export) — the interval-aware
-  "don't start a run we won't still be exporting for" debounce for 15-min net
-  metering. A fixed dwell prevents thrash; an explicit stop (manual off / boost
+- **Real-time divert** (pure decision in `divert.py`). With a **predicted
+  end-of-interval net** sensor configured (accumulated-so-far + live power
+  extrapolated over the minutes left), it drives both engage and shed off that
+  projection so it acts *before* an import happens — the right signal for 15-min
+  net metering. Engagement is **load-aware**: the highest-priority eligible load
+  is added only if its own projected draw for the rest of the interval still
+  leaves the interval closing in export (by `net_export_threshold`), so it never
+  turns on a load too big for the remaining surplus; shed drops the
+  lowest-priority load once the interval is projected to import. Dwell is
+  **asymmetric** — slow to engage (`DIVERT_ENGAGE_DWELL_S`), quick to shed
+  (`DIVERT_SHED_DWELL_S`) — and the gap between the engage/shed thresholds is a
+  hysteresis hold band; relay protection comes from that predictive accuracy, not
+  a long dwell. Without a predicted sensor it falls back to a reactive deadband on
+  the accumulated current-interval net (negative = export): add when exporting
+  past the threshold and the live sell price is below its gate, shed when
+  importing. An explicit stop (manual off / boost
   cancel) backs off so divert can't immediately re-grab the load. A diverted load
   that is on but idle (element satisfied, e.g. a full tank) is **left powered**,
   not switched off: it draws nothing, so the live export still flows to the other

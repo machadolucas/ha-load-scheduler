@@ -39,6 +39,7 @@ calendar-bus + solar-divert automations on the author's home server (the
 | `baseline.py` | Hour-of-day consumption profile from samples | no |
 | `models.py` | Subentry config → `LoadConfig` → `LoadParams` (target conversion, dynamic remaining) | no |
 | `rationale.py` | **Pure** decision facts (skip reason, cap-qualifying slots, solar coverage) the diagnostic card narrates | no |
+| `divert.py` | **Pure** real-time divert decision: predicted interval-net + load-aware engage/shed, priority-preserving | no |
 | `coordinator.py` | Read sources, allocate solar by priority, run engine per load, statistics baseline, repairs, failsafe | yes |
 | `actuation.py` | Resolve desired state + drive controlled entities, real-time divert, restart catch-up | yes |
 | `persistence.py` | `Store` for runtime (target / enabled / boost) | yes |
@@ -75,10 +76,12 @@ There is no policy enum — load *types* are expressed through config:
 
 Actuator precedence per tick (`actuation.py`): **manual override** (a
 foreign-context change backs off for a grace period) → **low-temp safety floor**
-→ **scheduled plan** (cheap/solar/min-service/boost) → **real-time divert** (live
-export surplus, sell-gated, allocated by priority, min-dwell anti-thrash) →
-**off**. Floor-heating shed overlaps the existing `price_hold_multi_level`
-system — don't let two controllers drive the same switch.
+→ **scheduled plan** (cheap/solar/min-service/boost) → **real-time divert**
+(`divert.py`: predicted interval-close net, sell-gated, priority-preserving,
+load-aware engage so a load only starts if its own draw still leaves the interval
+in export, asymmetric shed/engage dwell; reactive accumulated-net deadband when no
+predicted sensor) → **off**. Floor-heating shed overlaps the existing
+`price_hold_multi_level` system — don't let two controllers drive the same switch.
 
 ## Dev workflow
 
