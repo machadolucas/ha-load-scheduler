@@ -1336,6 +1336,7 @@ class LoadSchedulerCardEditor extends HTMLElement {
     const first = !this._hass;
     this._hass = hass;
     if (this._addPicker) this._addPicker.hass = hass;
+    (this._tankPickers || []).forEach((p) => (p.hass = hass));
     if (first && this._config) this._build();
   }
 
@@ -1431,16 +1432,20 @@ class LoadSchedulerCardEditor extends HTMLElement {
     });
     row.appendChild(name);
 
-    const tank = document.createElement("ha-textfield");
+    const tank = document.createElement("ha-entity-picker");
+    tank.hass = this._hass;
     tank.label = "Tank charge sensor (optional)";
     tank.value = item.tank_charge || "";
+    tank.includeDomains = ["sensor"];
+    tank.allowCustomEntity = true;
     tank.style.cssText = "flex:1 1 42%;min-width:0;";
-    tank.addEventListener("change", () => {
-      const v = tank.value.trim();
+    tank.addEventListener("value-changed", (ev) => {
+      const v = ev.detail && ev.detail.value;
       if (v) this._working[i].tank_charge = v;
       else delete this._working[i].tank_charge;
       this._emit(); // no rebuild → the field keeps focus/value
     });
+    this._tankPickers.push(tank);
     row.appendChild(tank);
 
     row.appendChild(
@@ -1504,8 +1509,10 @@ class LoadSchedulerCardEditor extends HTMLElement {
     });
     wrap.appendChild(hours);
 
+    this._tankPickers = [];
     const hint = document.createElement("div");
-    hint.textContent = "Entities — reorder with the arrows, set an optional display name:";
+    hint.textContent =
+      "Entities — reorder with the arrows, set an optional display name and tank-charge sensor:";
     hint.style.cssText = "font-size:0.82em;color:var(--secondary-text-color);";
     wrap.appendChild(hint);
 
