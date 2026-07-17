@@ -55,14 +55,18 @@ function fmtRelative(iso) {
   if (!iso) return "idle";
   const secs = (new Date(iso) - new Date()) / 1000;
   if (secs < 60) return "now";
-  if (secs < 3600) return `in ${Math.round(secs / 60)}m`;
+  // Round once at the display granularity, then split — rounding the
+  // remainder separately can produce "19h60" or "2d24h".
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `in ${mins}m`;
   if (secs < 86400) {
-    const h = Math.floor(secs / 3600);
-    const m = Math.round((secs % 3600) / 60);
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
     return m ? `in ${h}h${String(m).padStart(2, "0")}` : `in ${h}h`;
   }
-  const d = Math.floor(secs / 86400);
-  const h = Math.round((secs % 86400) / 3600);
+  const hours = Math.round(secs / 3600);
+  const d = Math.floor(hours / 24);
+  const h = hours % 24;
   return h ? `in ${d}d${h}h` : `in ${d}d`;
 }
 
