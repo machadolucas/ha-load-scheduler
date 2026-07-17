@@ -28,7 +28,22 @@ It is intentionally tiny — one row per load:
 - the **›** chevron marks the row as expandable.
 
 Tap a row to expand its individual upcoming periods (with their clock times,
-price and source).
+price and source). Inside that expanded detail panel, clicking the **title**
+opens the more-info dialog of the load's controlled switch — or, for
+informational loads with no controlled entity, the schedule sensor itself.
+
+If an entity sets `tank_charge` (below), a thin progress bar appears under the
+tile's title:
+
+- continuous red→green fill — saturated red when low, muted green when full;
+- a soft, faded leading edge, since the value is an estimate rather than a
+  measurement;
+- a subtle shimmer while the load's schedule sensor reports `heating: true`;
+- the integer percentage, printed at the end of the bar.
+
+Clicking the bar opens the **`tank_charge`** sensor's more-info dialog (not the
+tile's own). The tooltip shows estimated showers left, plus a calibrating note
+when the sensor reports `calibrated: false`.
 
 ## Usage
 
@@ -38,12 +53,21 @@ Add a Manual card (or the card picker → "Load Scheduler Card"):
 type: custom:load-scheduler-card
 title: Loads          # optional
 entities:
-  - sensor.water_heater_schedule
+  - entity: sensor.water_heater_schedule
+    name: Water heater              # optional, overrides the friendly name
+    tank_charge: sensor.lvv_water_heater_tank_charge   # optional
   - sensor.dishwasher_schedule
 ```
 
-`entities` are the per-load **`…_schedule`** sensors (one per load device). Omit
-`entities` and the card shows every Load Scheduler load it can find.
+`entities` are the per-load **`…_schedule`** sensors (one per load device),
+either as plain entity IDs or as objects with `entity` (required), `name`
+(optional display override), and `tank_charge` (optional). `tank_charge`
+points at an external 0–100 percentage sensor — e.g.
+`sensor.lvv_water_heater_tank_charge` from the load-need-predictor
+integration — and enables the tank-charge progress bar described above. Omit
+`entities` and the card shows every Load Scheduler load it can find (without
+a tank-charge bar, since auto-discovery has no way to know which percentage
+sensor belongs to which load).
 
 ## Diagnostic card (`custom:load-scheduler-diagnostic-card`)
 

@@ -171,16 +171,42 @@ const CARD_CSS = `
   .toggle:hover { border-color: var(--primary-color); }
   .toggle:active { transform: scale(0.92); }
   .tile .line { display: flex; justify-content: space-between; gap: 8px; font-size: 0.76em;
-          line-height: 1.32; }
+          line-height: 1.32; min-width: 0; }
   .tile .line .lk { color: var(--secondary-text-color); }
-  .tile .line .lv { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tile .line .lv { font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 0; }
+  .tile .line .lv.wrap { white-space: normal; overflow-wrap: anywhere; text-align: right; }
   .tile .muted { color: var(--secondary-text-color); }
+  /* Optional tank-charge bar, sits between the name/toggle row and the body.
+     Thin (~5px) and rounded; the fill's colour is set inline via --tank-color
+     (JS computes a red→green gradient, saturated when near-empty). The fill's
+     leading edge fades out over ~12px because the charge is only an estimate. */
+  .tank { display: flex; align-items: center; gap: 6px; margin: 4px 0 2px; min-width: 0; }
+  .tank .bar { position: relative; flex: 1 1 auto; min-width: 0; height: 5px; border-radius: 2.5px;
+          background: color-mix(in srgb, var(--secondary-text-color) 18%, transparent);
+          overflow: hidden; }
+  .tank .fill { position: relative; height: 100%; border-radius: 2.5px;
+          background: linear-gradient(90deg, var(--tank-color) calc(100% - 12px), transparent 100%); }
+  /* Discreet slow shimmer while the tank is actively charging. */
+  .tank .fill.charging::after { content: ""; position: absolute; inset: 0;
+          background: repeating-linear-gradient(90deg, transparent 0, transparent 12px,
+            rgba(255,255,255,0.12) 12px, rgba(255,255,255,0.12) 24px);
+          background-size: 24px 100%; animation: ls-tank-shimmer 3s linear infinite; }
+  .tank .pct { flex: 0 0 auto; font-size: 0.68em; font-variant-numeric: tabular-nums;
+          color: var(--secondary-text-color); }
+  @keyframes ls-tank-shimmer {
+    0% { background-position: 0 0; }
+    100% { background-position: 24px 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .tank .fill.charging::after { animation: none; }
+  }
   /* The expanded schedule is its own <ha-card> too. */
   .detail { display: block; margin: 8px 0 0; font-variant-numeric: tabular-nums; }
   .detail .detail-body { padding: 6px 10px; }
   .detail-head { display: flex; align-items: center; justify-content: space-between; gap: 8px;
           margin-bottom: 3px; }
-  .detail-name { font-weight: 600; font-size: 0.85em; }
+  .detail-name { font-weight: 600; font-size: 0.85em; cursor: pointer; }
+  .detail-name:hover { text-decoration: underline; }
   .detail .close { cursor: pointer; color: var(--secondary-text-color); padding: 2px 6px;
           font-size: 1em; user-select: none; }
   .detail .prow { font-size: 0.78em; line-height: 1.5; }
@@ -322,6 +348,37 @@ class LoadSchedulerCard extends HTMLElement {
     </div></ha-card>`;
   }
 
+  // Optional thin charge bar for an external tank sensor (0–100 %). Renders
+  // nothing (zero height) unless `item.tank_charge` names an entity that exists
+  // with a finite numeric state. `a` is the schedule sensor's attributes — its
+  // `heating` flag drives the charging shimmer.
+  _tankBar(item, a) {
+    if (!item.tank_charge) return "";
+    const ts = this._hass.states[item.tank_charge];
+    if (!ts) return "";
+    const num = Number(ts.state);
+    if (!isFinite(num)) return "";
+    const pct = Math.max(0, Math.min(100, num));
+    // Continuous red→green hue; saturation high (≈90%) near empty, muted
+    // (≈35%) toward full, so a full tank reads quiet and a near-empty one alarms.
+    const hue = pct * 1.2;
+    const sat = 90 - pct * 0.55;
+    const color = `hsl(${hue.toFixed(0)}, ${sat.toFixed(0)}%, 48%)`;
+    const ta = ts.attributes || {};
+    const charging = a.heating === true;
+    let tip = "Estimated tank charge";
+    if (typeof ta.showers_left === "number" && isFinite(ta.showers_left)) {
+      tip += ` · ~${Math.round(ta.showers_left)} showers left`;
+    }
+    if (ta.calibrated === false) tip += " (calibrating…)";
+    return `<div class="tank" data-action="more-info" data-entity="${item.tank_charge}" title="${tip}">
+      <div class="bar"><div class="fill${charging ? " charging" : ""}" style="width:${pct.toFixed(
+        0,
+      )}%; --tank-color:${color}"></div></div>
+      <span class="pct">${Math.round(pct)}%</span>
+    </div>`;
+  }
+
   _tile(item) {
     const entityId = item.entity;
     const st = this._hass.states[entityId];
@@ -355,10 +412,10 @@ class LoadSchedulerCard extends HTMLElement {
     if (informational) {
       body =
         st.state && st.state !== "unknown" && st.state !== "unavailable"
-          ? `<div class="line"><span class="lk">Next</span><span class="lv">${fmtClock(
+          ? `<div class="line"><span class="lk">Next</span><span class="lv wrap">${fmtClock(
               st.state,
             )} · ${fmtRelative(st.state)}</span></div>`
-          : `<div class="line"><span class="lv muted">no run scheduled</span></div>`;
+          : `<div class="line"><span class="lv wrap muted">no run scheduled</span></div>`;
     } else {
       body =
         `<div class="line"><span class="lk">Target</span><span class="lv">${this._targetText(
@@ -377,6 +434,7 @@ class LoadSchedulerCard extends HTMLElement {
         <span class="name">${name}</span>
         ${toggle}
       </div>
+      ${this._tankBar(item, a)}
       ${body}
     </div></ha-card>`;
   }
@@ -388,10 +446,14 @@ class LoadSchedulerCard extends HTMLElement {
     const st = this._hass.states[this._selected];
     if (!st) return "";
     const a = st.attributes || {};
+    const c = a.config || {};
     const item = this._entities().find((e) => e.entity === this._selected);
     const name =
       (item && item.name) || (a.friendly_name || this._selected).replace(/\s*schedule$/i, "");
     const isScheduler = Array.isArray(a.periods) && a.config && a.config.mode;
+    // Clicking the title opens the controlled switch's more-info (or the
+    // schedule sensor itself for informational loads with nothing to control).
+    const moreEntity = c.controlled_entity || this._selected;
     let inner = "";
     if (isScheduler) {
       const sym = currencySymbol(this._hass);
@@ -414,7 +476,9 @@ class LoadSchedulerCard extends HTMLElement {
     inner += this._timelineHtml();
     return `<ha-card class="detail"><div class="detail-body">
       <div class="detail-head">
-        <span class="detail-name">${name} — ${isScheduler ? "schedule" : "activity"}</span>
+        <span class="detail-name" data-action="more-info" data-entity="${moreEntity}">${name} — ${
+          isScheduler ? "schedule" : "activity"
+        }</span>
         <span class="close" data-close="1">✕</span>
       </div>${inner}</div></ha-card>`;
   }
@@ -596,11 +660,23 @@ class LoadSchedulerCard extends HTMLElement {
       this._tipPinned = false;
       this._hideTip();
     }
-    const toggle = e.target.closest("[data-action]");
-    if (toggle) {
-      e.stopPropagation(); // never open the detail panel from the on/off button
-      const entity = toggle.dataset.entity;
-      const on = toggle.dataset.on === "true";
+    const action = e.target.closest("[data-action]");
+    if (action) {
+      e.stopPropagation(); // never open the detail panel from a control
+      const entity = action.dataset.entity;
+      if (action.dataset.action === "more-info") {
+        if (entity) {
+          this.dispatchEvent(
+            new CustomEvent("hass-more-info", {
+              detail: { entityId: entity },
+              bubbles: true,
+              composed: true,
+            }),
+          );
+        }
+        return;
+      }
+      const on = action.dataset.on === "true";
       if (this._hass && entity) {
         this._hass.callService("homeassistant", on ? "turn_off" : "turn_on", {
           entity_id: entity,
@@ -689,6 +765,19 @@ class LoadSchedulerCard extends HTMLElement {
           periods.map((p) => `${p.start}-${p.end}`).join(","),
         ].join("|"),
       );
+      if (it.tank_charge) {
+        const ts = this._hass.states[it.tank_charge];
+        if (ts) {
+          const ta = ts.attributes || {};
+          parts.push(
+            `tank:${Math.round(Number(ts.state))}|${ta.calibrated}|${Math.round(
+              Number(ta.showers_left),
+            )}`,
+          );
+        } else {
+          parts.push("tank:missing");
+        }
+      }
     }
     return parts.join("§");
   }
@@ -1252,16 +1341,24 @@ class LoadSchedulerCardEditor extends HTMLElement {
     const list = Array.isArray(this._config.entities) ? this._config.entities : null;
     const raw = list && list.length ? list : discoverScheduleEntities(this._hass);
     this._working = raw.map((e) =>
-      typeof e === "string" ? { entity: e } : { entity: e.entity, name: e.name },
+      typeof e === "string"
+        ? { entity: e }
+        : { entity: e.entity, name: e.name, tank_charge: e.tank_charge },
     );
   }
 
   _emit() {
     const entities = this._working
       .filter((e) => e && e.entity)
-      .map((e) =>
-        e.name && String(e.name).trim() ? { entity: e.entity, name: String(e.name).trim() } : e.entity,
-      );
+      .map((e) => {
+        const name = e.name && String(e.name).trim() ? String(e.name).trim() : null;
+        const tank = e.tank_charge && String(e.tank_charge).trim() ? String(e.tank_charge).trim() : null;
+        if (!name && !tank) return e.entity;
+        const obj = { entity: e.entity };
+        if (name) obj.name = name;
+        if (tank) obj.tank_charge = tank;
+        return obj;
+      });
     const next = { ...this._config };
     if (entities.length) next.entities = entities;
     else delete next.entities;
@@ -1329,6 +1426,18 @@ class LoadSchedulerCardEditor extends HTMLElement {
       this._emit(); // no rebuild → the field keeps focus/value
     });
     row.appendChild(name);
+
+    const tank = document.createElement("ha-textfield");
+    tank.label = "Tank charge sensor (optional)";
+    tank.value = item.tank_charge || "";
+    tank.style.cssText = "flex:1 1 42%;min-width:0;";
+    tank.addEventListener("change", () => {
+      const v = tank.value.trim();
+      if (v) this._working[i].tank_charge = v;
+      else delete this._working[i].tank_charge;
+      this._emit(); // no rebuild → the field keeps focus/value
+    });
+    row.appendChild(tank);
 
     row.appendChild(
       this._miniButton("✕", "Remove", false, () => {
