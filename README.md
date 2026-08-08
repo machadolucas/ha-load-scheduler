@@ -36,8 +36,10 @@ exposes simple knobs.
 - **Runtime *or* energy targets** — schedule by minutes of run time, or by kWh
   to deliver at the load's power draw (EV charging). **Dynamic remaining** shrinks
   the remaining target by how much the load already ran today — measured
-  automatically from the feedback element since local midnight (no extra sensor),
-  or from an explicit "delivered today" sensor if you prefer. So a load that
+  automatically from the feedback element since local midnight (no extra sensor;
+  if the feedback sensor is unavailable at refresh time it falls back to the
+  controlled entity so a dead sensor doesn't zero the measurement), or from an
+  explicit "delivered today" sensor if you prefer. So a load that
   already ran enough — e.g. on solar, or via a manual/comfort run — is scheduled
   for less or skipped.
 - **Informational mode** — compute and display the cheapest time without

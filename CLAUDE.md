@@ -68,7 +68,13 @@ There is no policy enum — load *types* are expressed through config:
 
 - **Top-up** (LVV, EV): `target > 0`, `allow_solar`; an optional
   `feedback_entity` marks the load "satisfied" (running but element idle, e.g. a
-  full tank) so it isn't given more solar.
+  full tank) so it isn't given more solar. It may be numeric watts (a power
+  sensor, `feedback_idle_w` threshold) or plain on/off (a binary_sensor); all
+  three consumers — the card's timeline, `coordinator._delivered_minutes`, and
+  the schedule sensor's live dot (`sensor.py:_actual_state`) — degrade
+  gracefully when it's unavailable/unknown instead of reading "idle"/0: the
+  card and dot fall back to the controlled switch's state, and delivered
+  measurement falls back to the controlled entity for that refresh.
 - **Comfort-shed / secondary heat** (floor heating; heat pumps are primary):
   `target = 0` + a `min_service` daily dry-out + a `temp_entity`/`temp_min`
   **low-temp safety floor** + `allow_solar`. It then only runs on solar divert,

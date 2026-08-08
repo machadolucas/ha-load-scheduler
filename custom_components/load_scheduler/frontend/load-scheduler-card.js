@@ -594,8 +594,11 @@ class LoadSchedulerCard extends HTMLElement {
     return out;
   }
 
-  // Merge the controlled (on/off) and feedback (power) step-functions into
-  // off / idle / heating (or plain on/off for a basic switch) segments.
+  // Merge the controlled (on/off) and feedback (power, or on/off for a
+  // binary_sensor) step-functions into off / idle / heating (or plain on/off
+  // for a basic switch) segments. A dead feedback sample (unavailable/unknown/
+  // not-yet-sampled) degrades to the no-feedback assumption below — heating —
+  // rather than painting the whole bar idle.
   _buildSegments(start, end, ctrl, fb, info) {
     const times = new Set([start]);
     for (const e of ctrl) if (e.t > start && e.t < end) times.add(e.t);
@@ -620,8 +623,14 @@ class LoadSchedulerCard extends HTMLElement {
       if (!on) status = "off";
       else if (info.mode === "basic") status = "on";
       else if (fb) {
-        const p = parseFloat(valAt(fb, t0));
-        status = !isNaN(p) && p >= info.idleW ? "heating" : "idle";
+        const v = valAt(fb, t0);
+        const p = parseFloat(v);
+        if (!isNaN(p)) status = p >= info.idleW ? "heating" : "idle";
+        else if (v === "on" || v === "heating") status = "heating";
+        else if (v === "off") status = "idle";
+        // Dead feedback (unavailable/unknown/no sample yet) degrades to the
+        // no-feedback assumption — switch on ⇒ heating — never all-idle.
+        else status = "heating";
       } else status = "heating";
       const last = segs[segs.length - 1];
       if (last && last.status === status) last.end = t1;

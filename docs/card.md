@@ -19,7 +19,10 @@ It is intentionally tiny — one row per load:
 
 - the **dot** reflects the load's actual state: **orange** = heating (the element
   is drawing power), **light yellow** = powered but idle (on, element satisfied),
-  **grey** = off;
+  **grey** = off; the `feedback_entity` can be a numeric power sensor or a plain
+  on/off (binary_sensor), and if it goes unavailable the dot and the expanded
+  24h activity timeline both fall back to the controlled switch's state (heating
+  while on) instead of reading idle/off;
 - the time is **`now`** when the scheduled run is current, otherwise **`in 5h`** —
   the relative countdown to the next run (handy for manually-started loads like a
   dishwasher), or `idle` when nothing is scheduled;

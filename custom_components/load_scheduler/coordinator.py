@@ -59,13 +59,17 @@ def _state_on(value: str, threshold: float | None) -> bool:
     """Whether a recorded state counts as 'delivering'.
 
     With a power threshold (a numeric feedback sensor) the element is delivering
-    at or above it; otherwise an on/off entity simply has to be ``on``.
+    at or above it; otherwise an on/off entity simply has to be ``on``. A
+    feedback entity can also be a binary_sensor (config allows either), so a
+    non-numeric state with a threshold configured falls back to the same on/off
+    check the live dot uses (``sensor.py:_actual_state``) instead of silently
+    counting as not-delivering — "unavailable"/"unknown" still don't count.
     """
     if threshold is not None:
         try:
             return float(value) >= threshold
         except (TypeError, ValueError):
-            return False
+            return str(value).lower() in ("on", "heating")
     return str(value).lower() == "on"
 
 
@@ -401,15 +405,17 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         ):
             await self.async_refresh_delivered()
 
-    async def async_refresh_delivered(self) -> None:
-        """Measure today's on-time for loads without an explicit delivered sensor.
+    def _delivered_targets(self) -> list[tuple[str, str, float | None]]:
+        """Which entity to measure on-time from, per load, and its threshold.
 
-        For each such load, the on-time of its feedback element (or, lacking one,
-        its controlled entity) since local midnight is read from the recorder.
-        This makes dynamic-remaining work with no extra sensor, counts heating no
-        matter who started it (manual / comfort automation / the scheduler), and
-        resets at midnight because the query window restarts each day.
-        Best-effort: silently no-ops if the recorder is unavailable.
+        Prefers the feedback entity (it isolates the element's own draw from
+        e.g. a shared circulation pump on the same switch). But a feedback
+        entity can go dead — orphaned after a device re-add, battery-out, zwave
+        drop — and its *current* state is the only cheap liveness check available
+        before paying for a recorder history query; a feedback sensor stuck on
+        "unavailable"/"unknown" would otherwise measure 0 delivered all day even
+        though the load ran fine. In that case fall back to the controlled
+        entity (switch on/off, no threshold) for this refresh.
         """
         targets: list[tuple[str, str, float | None]] = []
         for subentry_id, subentry in self.config_entry.subentries.items():
@@ -417,9 +423,29 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
             if cfg.delivered_entity or cfg.is_informational:
                 continue
             if cfg.feedback_entity:
+                fb_state = self.hass.states.get(cfg.feedback_entity)
+                if fb_state is None or fb_state.state in ("unknown", "unavailable"):
+                    if cfg.controlled_entity:
+                        targets.append((subentry_id, cfg.controlled_entity, None))
+                    continue
                 targets.append((subentry_id, cfg.feedback_entity, cfg.feedback_idle_w))
             elif cfg.controlled_entity:
                 targets.append((subentry_id, cfg.controlled_entity, None))
+        return targets
+
+    async def async_refresh_delivered(self) -> None:
+        """Measure today's on-time for loads without an explicit delivered sensor.
+
+        For each such load, the on-time of its feedback element (or, lacking one,
+        its controlled entity) since local midnight is read from the recorder.
+        This makes dynamic-remaining work with no extra sensor, counts heating no
+        matter who started it (manual / comfort automation / the scheduler), and
+        resets at midnight because the query window restarts each day. A feedback
+        entity that's currently unavailable/unknown falls back to the controlled
+        entity for this refresh (see ``_delivered_targets``).
+        Best-effort: silently no-ops if the recorder is unavailable.
+        """
+        targets = self._delivered_targets()
         if not targets:
             return
         try:
