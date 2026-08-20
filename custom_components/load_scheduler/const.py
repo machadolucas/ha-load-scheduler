@@ -139,3 +139,4 @@ EVENT_RUN_ENDED = "load_scheduler_run_ended"
 
 # Repair issues.
 ISSUE_PRICE_UNAVAILABLE = "price_unavailable"
+ISSUE_PRICE_GAP = "price_gap"

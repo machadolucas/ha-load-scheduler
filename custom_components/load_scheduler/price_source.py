@@ -18,6 +18,11 @@ Supported attribute layouts (auto-detected, in order):
   ``prices_today``/``prices_tomorrow``, ``today_interval_prices``/…;
 * a single list under ``prices`` / ``data`` / ``forecast`` (ENTSO-e etc.).
 
+A matching ``*_yesterday`` list is read too when present. Feeds anchored to the
+*market* day rather than the local one (Nord Pool's delivery day is CET/CEST, so
+in Helsinki it starts at 01:00) keep the slots covering the first local hour of
+the day in that list; ignoring it left the scheduler blind from 00:00 to 01:00.
+
 Per-item keys are detected from a small candidate set; ``start`` may be an ISO
 string or a ``datetime``; ``end`` is taken from the item, else the next item's
 start, else inferred from the dominant slot length.
@@ -28,12 +33,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-# Attribute names that hold a *today* list and the matching *tomorrow* list.
-_SPLIT_ATTR_PAIRS: list[tuple[str, str]] = [
-    ("data_today", "data_tomorrow"),
-    ("raw_today", "raw_tomorrow"),
-    ("prices_today", "prices_tomorrow"),
-    ("today_interval_prices", "tomorrow_interval_prices"),
+# Attribute name triples: the *previous* day's list, the *today* list and the
+# matching *tomorrow* list. The previous-day list matters because a feed can be
+# anchored to a market day rather than the local one: Nord Pool's delivery day is
+# CET/CEST-based, which in Helsinki starts at 01:00, so between local midnight
+# and 01:00 the slots covering *now* still live in yesterday's list.
+_SPLIT_ATTR_TRIPLES: list[tuple[str, str, str]] = [
+    ("data_yesterday", "data_today", "data_tomorrow"),
+    ("raw_yesterday", "raw_today", "raw_tomorrow"),
+    ("prices_yesterday", "prices_today", "prices_tomorrow"),
+    ("yesterday_interval_prices", "today_interval_prices", "tomorrow_interval_prices"),
 ]
 # Attribute names that hold a single combined list (today + tomorrow together).
 _SINGLE_ATTRS: list[str] = ["prices", "data", "forecast"]
@@ -64,6 +73,7 @@ class FormatSpec:
     buy_key: str
     sell_key: str | None
     end_key: str | None
+    yesterday_attr: str | None = None
 
 
 class PriceFormatError(ValueError):
@@ -81,10 +91,12 @@ def detect_format(attributes: dict) -> FormatSpec:
     """
     today_attr: str | None = None
     tomorrow_attr: str | None = None
+    yesterday_attr: str | None = None
 
-    for today, tomorrow in _SPLIT_ATTR_PAIRS:
+    for yesterday, today, tomorrow in _SPLIT_ATTR_TRIPLES:
         if today in attributes:
             today_attr, tomorrow_attr = today, tomorrow
+            yesterday_attr = yesterday if yesterday in attributes else None
             break
     if today_attr is None:
         today_attr = next((a for a in _SINGLE_ATTRS if a in attributes), None)
@@ -93,8 +105,16 @@ def detect_format(attributes: dict) -> FormatSpec:
     if today_attr is None:
         raise PriceFormatError("no recognised forecast attribute found")
 
-    sample = attributes.get(today_attr) or []
-    if not isinstance(sample, list) or not sample or not isinstance(sample[0], dict):
+    # Key detection reads the first *non-empty* list: a market-day-anchored feed
+    # can legitimately have an empty ``data_today`` right after its rollover
+    # while yesterday's (or tomorrow's) list still describes the format.
+    sample: list = []
+    for attr in (yesterday_attr, today_attr, tomorrow_attr):
+        candidate = attributes.get(attr) if attr else None
+        if isinstance(candidate, list) and candidate:
+            sample = candidate
+            break
+    if not sample or not isinstance(sample[0], dict):
         raise PriceFormatError(f"attribute {today_attr!r} is not a list of dicts")
 
     item = sample[0]
@@ -110,6 +130,7 @@ def detect_format(attributes: dict) -> FormatSpec:
         buy_key=buy_key,
         sell_key=_first_present(_SELL_KEYS, item),
         end_key=_first_present(_END_KEYS, item),
+        yesterday_attr=yesterday_attr,
     )
 
 
@@ -169,14 +190,26 @@ def _parse_list(items: list[dict], spec: FormatSpec) -> list[ForecastSlot]:
 def normalize(attributes: dict, spec: FormatSpec | None = None) -> list[ForecastSlot]:
     """Normalise a price entity's attributes into time-ordered ForecastSlots.
 
-    Concatenates the today and tomorrow lists (tomorrow may be missing), parses
-    each item, sorts by start and drops exact-duplicate start times (keeping the
-    first), which guards against overlapping today/tomorrow tails.
+    Concatenates the yesterday, today and tomorrow lists (either flank may be
+    missing), parses each item, sorts by start and drops exact-duplicate start
+    times (keeping the first), which guards against overlapping list tails.
+
+    Concatenation order is chronological on purpose: ``_parse_list`` infers a
+    missing ``end`` from the *next item's start in list order*, so an
+    out-of-order concatenation would fabricate slot lengths at the seams.
+    Yesterday's slots are kept rather than filtered here because the engine's
+    window already discards anything that has fully elapsed — and dropping them
+    eagerly is exactly what made a market-day-anchored feed invisible for the
+    hour between local midnight and the market day's start.
     """
     spec = spec or detect_format(attributes)
-    raw: list[dict] = list(attributes.get(spec.today_attr) or [])
-    if spec.tomorrow_attr and spec.tomorrow_attr != spec.today_attr:
-        raw += list(attributes.get(spec.tomorrow_attr) or [])
+    seen_attrs: list[str] = []
+    for attr in (spec.yesterday_attr, spec.today_attr, spec.tomorrow_attr):
+        if attr and attr not in seen_attrs:
+            seen_attrs.append(attr)
+    raw: list[dict] = []
+    for attr in seen_attrs:
+        raw += list(attributes.get(attr) or [])
 
     slots = _parse_list(raw, spec)
     slots.sort(key=lambda s: s.start)

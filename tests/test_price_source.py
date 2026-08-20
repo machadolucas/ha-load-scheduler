@@ -62,6 +62,71 @@ def test_user_day_ahead_concatenates_tomorrow():
 
 
 # --------------------------------------------------------------------------- #
+# market-day-anchored feeds: the previous day's list
+# --------------------------------------------------------------------------- #
+
+
+def _quarter_hours(t0: datetime, count: int, buy: float = 0.10) -> list[dict]:
+    """``count`` contiguous 15-min items in the live day-ahead shape."""
+    return [
+        {
+            "start": (t0 + timedelta(minutes=15 * i)).isoformat(),
+            "end": (t0 + timedelta(minutes=15 * (i + 1))).isoformat(),
+            "buy": buy,
+            "sell": buy / 2,
+        }
+        for i in range(count)
+    ]
+
+
+def test_reads_previous_market_day_list():
+    # Nord Pool's delivery day is CET/CEST, so in Helsinki `data_today` starts at
+    # 01:00 and the 00:00-01:00 slots stay in `data_yesterday`.
+    y0 = datetime(2026, 8, 20, 1, 0, tzinfo=FI)
+    t0 = datetime(2026, 8, 21, 1, 0, tzinfo=FI)
+    attrs = {
+        "data_yesterday": _quarter_hours(y0, 96, buy=0.20),
+        "data_today": _quarter_hours(t0, 96, buy=0.30),
+        "data_tomorrow": [],
+        "tomorrow_valid": False,
+    }
+    slots = ps.normalize(attrs)
+    assert len(slots) == 192
+    starts = [s.start for s in slots]
+    assert starts == sorted(starts)  # chronological across the seam
+    # The 00:45-01:00 local slot — the one the scheduler used to be blind to.
+    cheap = datetime(2026, 8, 21, 0, 45, tzinfo=FI)
+    assert any(s.start == cheap.astimezone(UTC) for s in slots)
+    # No fabricated gap or overlap where yesterday hands over to today.
+    gaps = [b.start - a.start for a, b in zip(slots, slots[1:], strict=False)]
+    assert all(g == timedelta(minutes=15) for g in gaps)
+
+
+def test_format_detected_from_yesterday_when_today_is_empty():
+    # A feed can briefly empty `data_today` at its own rollover; the format is
+    # still discoverable and yesterday's slots must survive.
+    y0 = datetime(2026, 8, 20, 1, 0, tzinfo=FI)
+    attrs = {"data_yesterday": _quarter_hours(y0, 4), "data_today": [], "data_tomorrow": []}
+    slots = ps.normalize(attrs)
+    assert len(slots) == 4
+
+
+def test_previous_day_absent_is_still_fine():
+    t0 = datetime(2026, 8, 21, 1, 0, tzinfo=FI)
+    slots = ps.normalize({"data_today": _quarter_hours(t0, 4)})
+    assert len(slots) == 4
+
+
+def test_previous_day_overlap_is_deduped():
+    t0 = datetime(2026, 8, 21, 1, 0, tzinfo=FI)
+    shared = _quarter_hours(t0, 2, buy=0.20)
+    attrs = {"data_yesterday": shared, "data_today": _quarter_hours(t0, 4, buy=0.30)}
+    slots = ps.normalize(attrs)
+    assert len(slots) == 4
+    assert slots[0].buy == pytest.approx(0.20)  # first wins, as documented
+
+
+# --------------------------------------------------------------------------- #
 # Nord Pool raw_today / raw_tomorrow with {start, end, value}
 # --------------------------------------------------------------------------- #
 

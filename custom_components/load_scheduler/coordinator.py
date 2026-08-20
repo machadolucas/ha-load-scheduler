@@ -42,6 +42,7 @@ from .const import (
     DEFAULT_BASELINE_W,
     DEFAULT_FORECAST_PRICE_MARGIN,
     DOMAIN,
+    ISSUE_PRICE_GAP,
     ISSUE_PRICE_UNAVAILABLE,
     UPDATE_INTERVAL_MINUTES,
 )
@@ -159,6 +160,9 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         # delivered_entity but does have a feedback/controlled entity to measure.
         self._delivered_today: dict[str, float] = {}
         self._delivered_at: datetime | None = None
+        # True while the price forecast has slots but none covering *now*; kept
+        # so the warning is logged on transition, not on every 5-minute tick.
+        self._price_gap: bool = False
         # Predictor price forecast for slots beyond the real horizon.
         self._forecast_entity: str | None = entry.data.get(CONF_FORECAST_PRICE_ENTITY)
         self._forecast_margin: float = float(
@@ -220,6 +224,48 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
                 translation_key=ISSUE_PRICE_UNAVAILABLE,
                 translation_placeholders={"entity": self._buy_entity},
             )
+
+    @callback
+    def _update_price_gap_issue(self, slots: list[engine.Slot], now_utc: datetime) -> None:
+        """Flag a forecast that has slots but none covering *now*.
+
+        A price entity anchored to a market day (or one that simply lags) can
+        return a full, healthy-looking list whose first slot is still in the
+        future. Every load then plans around a hole it cannot see, silently — the
+        exact failure that hid a nightly 00:00-01:00 blind spot for weeks. Kept
+        separate from ISSUE_PRICE_UNAVAILABLE so a dead sensor raises one issue,
+        not two, and logged only on transition so a 5-minute tick can't spam.
+        """
+        if not slots:  # already covered by ISSUE_PRICE_UNAVAILABLE
+            covered = True
+        else:
+            covered = any(s.start <= now_utc < s.end for s in slots)
+        if covered:
+            if self._price_gap:
+                _LOGGER.info("Price forecast covers the current time again")
+            self._price_gap = False
+            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_PRICE_GAP)
+            return
+        first = min(s.start for s in slots)
+        if not self._price_gap:
+            _LOGGER.warning(
+                "Price forecast %s has no slot covering now; earliest is %s",
+                self._buy_entity,
+                first.isoformat(),
+            )
+        self._price_gap = True
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            ISSUE_PRICE_GAP,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_PRICE_GAP,
+            translation_placeholders={
+                "entity": self._buy_entity,
+                "first_slot": dt_util.as_local(first).isoformat(timespec="minutes"),
+            },
+        )
 
     @callback
     def async_setup_listeners(self) -> None:
@@ -553,6 +599,7 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         residual = self._excess_by_slot(base_slots) if base_slots else {}
         now = dt_util.now()  # local: windows anchor to wall-clock
         now_utc = dt_util.utcnow()
+        self._update_price_gap_issue(base_slots, now_utc)
         await self._maybe_refresh_delivered(now_utc)
 
         # Solar loads first, highest priority first: they claim excess before

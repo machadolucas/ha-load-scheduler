@@ -172,6 +172,10 @@
     "price_unavailable": {
       "title": "Load Scheduler: price forecast unavailable",
       "description": "The configured price sensor ({entity}) is not providing a usable forecast, so no loads can be scheduled. Check that the sensor is available and exposes today/tomorrow prices in its attributes. Scheduling resumes automatically once it recovers."
+    },
+    "price_gap": {
+      "title": "Load Scheduler: price forecast has a gap",
+      "description": "The price sensor ({entity}) is returning prices, but none of them cover the current time - the earliest slot starts at {first_slot}. Loads cannot be scheduled until then. This usually means the forecast is anchored to a market day that starts later than local midnight, or that the sensor is lagging. Scheduling resumes automatically once a covering slot appears."
     }
   }
 }
