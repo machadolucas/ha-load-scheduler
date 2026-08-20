@@ -363,6 +363,210 @@ def test_min_run_drops_short_fragment():
     assert engine.compute_plan(slots, params) == []
 
 
+# --------------------------------------------------------------------------- #
+# window clipping
+# --------------------------------------------------------------------------- #
+
+
+def test_partly_elapsed_slot_is_clipped_to_the_window():
+    # The window opens 10 min into the first 15-min slot: only 5 of its minutes
+    # are still buyable, so the target must be topped up from the next slot.
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    slots = make_slots(start, [1, 1, 9, 9])
+    params = LoadParams(
+        mode=ScheduleMode.NON_SEQUENTIAL,
+        target_minutes=20,
+        window=(start + timedelta(minutes=10), slots[-1].end),
+    )
+    periods = engine.plan_non_sequential(slots, params)
+    assert total_minutes(periods) == pytest.approx(20)
+    assert periods[0].start == start + timedelta(minutes=10)  # not the slot boundary
+    # The 20 minutes end inside the cheap pair, never spilling into the 9s.
+    assert periods[-1].end <= slots[1].end
+
+
+def test_slot_overrunning_the_window_is_clipped_at_the_deadline():
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    slots = make_slots(start, [9, 1], slot_minutes=60)
+    deadline = start + timedelta(minutes=90)  # halfway through the cheap slot
+    params = LoadParams(
+        mode=ScheduleMode.NON_SEQUENTIAL, target_minutes=60, window=(start, deadline)
+    )
+    periods = engine.plan_non_sequential(slots, params)
+    assert max(p.end for p in periods) <= deadline
+    assert total_minutes(periods) == pytest.approx(60)
+
+
+def test_clipping_preserves_the_solar_blend():
+    # excess_kwh scales with the clipped span, so the covered fraction — and
+    # therefore the effective price — is the same as for the whole slot.
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    slots = make_slots(start, [10], slot_minutes=60, sell=[2.0], excess=[4.0])
+    whole = engine.effective_cost(slots[0], draw_kw=4, solar_enabled=True)
+    clipped = engine._window_slots(slots, (start + timedelta(minutes=30), slots[0].end))
+    assert clipped[0].minutes == pytest.approx(30)
+    assert engine.effective_cost(clipped[0], draw_kw=4, solar_enabled=True) == pytest.approx(whole)
+
+
+# --------------------------------------------------------------------------- #
+# mixed slot resolutions (15-min day-ahead + hourly predictor forecast)
+# --------------------------------------------------------------------------- #
+
+
+def mixed_slots() -> list[Slot]:
+    """Four 15-min slots at 10, then four hourly slots at 1 (the cheap region)."""
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    quarter = make_slots(start, [10, 10, 10, 10])
+    hourly = make_slots(quarter[-1].end, [1, 1, 1, 1], slot_minutes=60)
+    return quarter + hourly
+
+
+def test_sequential_block_sized_in_minutes_not_slots():
+    slots = mixed_slots()
+    params = LoadParams(mode=ScheduleMode.SEQUENTIAL, target_minutes=120, window=full_window(slots))
+    periods = engine.plan_sequential(slots, params)
+    assert len(periods) == 1
+    assert periods[0].minutes == pytest.approx(120)
+    # Two hours of the cheap hourly region, not "120 min = 8 quarter-hours".
+    assert periods[0].start == slots[4].start
+
+
+def test_sequential_weights_block_cost_by_minutes():
+    # An unweighted per-slot sum would rate the 4x15-min region (4 x 10 = 40)
+    # against the 2 hourly slots (2 x 11 = 22) and wrongly prefer the hourly one;
+    # per kWh the quarter-hours are cheaper for the same 60 minutes.
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    quarter = make_slots(start, [10, 10, 10, 10])
+    hourly = make_slots(quarter[-1].end, [11, 11], slot_minutes=60)
+    slots = quarter + hourly
+    params = LoadParams(mode=ScheduleMode.SEQUENTIAL, target_minutes=60, window=full_window(slots))
+    periods = engine.plan_sequential(slots, params)
+    assert periods[0].start == start
+    assert periods[0].minutes == pytest.approx(60)
+
+
+# --------------------------------------------------------------------------- #
+# min-run aware selection
+# --------------------------------------------------------------------------- #
+
+
+def test_min_run_keeps_the_minutes_instead_of_dropping_a_fragment():
+    # Cheap slots at 0-1 and an isolated one at 5. Slot-at-a-time selection would
+    # pick all three and then delete the lone 15-min run, delivering only 30 of
+    # the 45 minutes. Run-unit selection buys one contiguous 45-min run instead.
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    slots = make_slots(start, [1, 1, 2, 9, 9, 1, 9])
+    params = LoadParams(
+        mode=ScheduleMode.NON_SEQUENTIAL,
+        target_minutes=45,
+        window=full_window(slots),
+        min_run_minutes=30,
+    )
+    periods = engine.compute_plan(slots, params)
+    assert len(periods) == 1
+    assert periods[0].minutes == pytest.approx(45)
+    assert periods[0].start == start
+    assert total_minutes(periods) == pytest.approx(45)
+
+
+def test_min_run_splits_into_whole_runs_and_honours_min_off():
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    slots = make_slots(start, [1, 1, 9, 9, 1, 1, 9, 9])
+    params = LoadParams(
+        mode=ScheduleMode.NON_SEQUENTIAL,
+        target_minutes=60,
+        window=full_window(slots),
+        min_run_minutes=30,
+        min_off_minutes=30,
+    )
+    periods = engine.compute_plan(slots, params)
+    assert total_minutes(periods) == pytest.approx(60)
+    assert all(p.minutes >= 30 - 1e-6 for p in periods)
+    periods.sort(key=lambda p: p.start)
+    for a, b in zip(periods, periods[1:], strict=False):
+        assert (b.start - a.end).total_seconds() / 60.0 >= 30 - 1e-6
+
+
+def test_min_service_may_overshoot_to_reach_a_legal_run_length():
+    # Target is smaller than min_run, but the anti-starvation floor still has to
+    # be delivered, so it is rounded up to one legal run rather than skipped.
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    slots = make_slots(start, [1, 2, 9, 9])
+    params = LoadParams(
+        mode=ScheduleMode.NON_SEQUENTIAL,
+        target_minutes=15,
+        window=full_window(slots),
+        min_service_minutes=15,
+        min_run_minutes=30,
+    )
+    periods = engine.compute_plan(slots, params)
+    assert total_minutes(periods) == pytest.approx(30)
+    assert periods[0].start == start
+
+
+# --------------------------------------------------------------------------- #
+# min-service is held to the accounting day
+# --------------------------------------------------------------------------- #
+
+
+def test_min_service_prefers_slots_before_its_deadline():
+    # The cheapest slots are after midnight, but delivered-today resets there, so
+    # the guaranteed minutes must land before it; discretionary ones need not.
+    start = datetime(2026, 1, 1, 23, 0, tzinfo=UTC)
+    slots = make_slots(start, [5, 6, 9, 9, 1, 1, 1, 1])  # midnight after slot 3
+    midnight = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
+    params = LoadParams(
+        mode=ScheduleMode.NON_SEQUENTIAL,
+        target_minutes=60,
+        window=full_window(slots),
+        min_service_minutes=30,
+        min_service_by=midnight,
+    )
+    periods = engine.plan_non_sequential(slots, params)
+    assert total_minutes(periods) == pytest.approx(60)
+    before = sum(
+        (min(p.end, midnight) - p.start).total_seconds() / 60.0
+        for p in periods
+        if p.start < midnight
+    )
+    assert before == pytest.approx(30)  # exactly the floor, taken from the two cheapest
+    assert periods[0].start == start  # the 5 and 6, i.e. cheapest before midnight
+
+
+def test_min_service_falls_back_past_its_deadline_rather_than_going_unmet():
+    # Only 15 min of the accounting day is left: the floor takes what it can
+    # before midnight and the rest afterwards, still cap-exempt.
+    start = datetime(2026, 1, 1, 23, 45, tzinfo=UTC)
+    slots = make_slots(start, [9, 9, 9, 9])
+    midnight = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
+    params = LoadParams(
+        mode=ScheduleMode.NON_SEQUENTIAL,
+        target_minutes=0,
+        window=full_window(slots),
+        min_service_minutes=30,
+        min_service_by=midnight,
+        cap=1.0,  # everything is above cap; the floor ignores it
+    )
+    periods = engine.plan_non_sequential(slots, params)
+    assert total_minutes(periods) == pytest.approx(30)
+    assert periods[0].start == start
+
+
+def test_no_min_service_deadline_leaves_the_floor_free():
+    start = datetime(2026, 1, 1, 23, 0, tzinfo=UTC)
+    slots = make_slots(start, [5, 6, 9, 9, 1, 1, 1, 1])
+    params = LoadParams(
+        mode=ScheduleMode.NON_SEQUENTIAL,
+        target_minutes=60,
+        window=full_window(slots),
+        min_service_minutes=30,
+    )
+    periods = engine.plan_non_sequential(slots, params)
+    # Unconstrained, all 60 minutes come from the cheap post-midnight run.
+    assert total_minutes(periods) == pytest.approx(60)
+    assert periods[0].start == datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
+
+
 # DST correctness is handled at the boundary, not here: price_source normalises
 # all slots to UTC (a DST-free zone) before they reach the engine, and the
 # window resolver anchors to local wall-clock. The engine therefore only ever

@@ -60,6 +60,10 @@ class PlanRationale:
     solar_enabled: bool
     solar_excess_kwh: float  # sum of excess_kwh across in-window slots
     solar_minutes: float  # scheduled minutes whose source is SOLAR/MIXED
+    # Deadline the min-service floor is held to (the next local midnight), so the
+    # card can say *why* a guaranteed run was placed where it was. None when the
+    # floor is already delivered or not configured.
+    min_service_by: datetime | None = None
     # Coordinator-only: a manual boost is forcing the load on right now.
     boost: bool = False
 
@@ -104,6 +108,7 @@ def explain(
         solar_enabled=solar,
         solar_excess_kwh=solar_excess_kwh,
         solar_minutes=solar_minutes,
+        min_service_by=params.min_service_by,
     )
 
 

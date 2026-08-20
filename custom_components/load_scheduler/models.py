@@ -147,7 +147,13 @@ def build_load_params(
     if cfg.horizon_hours:
         # Multi-day: search the next N hours so the engine can defer an expensive
         # today to a cheaper tomorrow (once tomorrow's real prices are known).
+        # A configured earliest/deadline still applies — the wizard collects all
+        # three, and silently dropping two of them made them look like no-ops.
         window = (now, now + timedelta(hours=cfg.horizon_hours))
+        if cfg.earliest is not None or cfg.deadline is not None:
+            daily = resolve_window(now, cfg.earliest, cfg.deadline)
+            start, end = max(window[0], daily[0]), min(window[1], daily[1])
+            window = (start, end) if start < end else (start, start)
     else:
         window = resolve_window(now, cfg.earliest, cfg.deadline)
     return LoadParams(
@@ -162,4 +168,24 @@ def build_load_params(
         min_separation_minutes=cfg.min_separation_minutes,
         min_run_minutes=cfg.min_run_minutes,
         min_off_minutes=cfg.min_off_minutes,
+        min_service_by=_min_service_by(cfg, now, window, delivered_minutes),
     )
+
+
+def _min_service_by(
+    cfg: LoadConfig,
+    now: datetime,
+    window: tuple[datetime, datetime],
+    delivered_minutes: float,
+) -> datetime | None:
+    """When the min-service floor stops counting: the next local midnight.
+
+    Delivered-today is measured from local midnight, so a guaranteed minute
+    scheduled after it protects tomorrow, not today — and today's floor is then
+    silently never met. Built from the *date* (never ``+ timedelta(hours=24)``)
+    so a 23h/25h DST day still lands on the real boundary.
+    """
+    if cfg.min_service_minutes - delivered_minutes <= 0:
+        return None
+    day_end = datetime.combine(now.date() + timedelta(days=1), time.min, tzinfo=now.tzinfo)
+    return min(day_end, window[1])

@@ -573,16 +573,29 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
 
         Ensures a lower-priority load can't claim the same kWh a higher-priority
         one already took. With no known draw, the slot's excess is fully claimed.
+
+        Matched by interval *overlap*, not by the period starting on the slot
+        boundary: the engine clips the in-progress slot to ``now``, so a run that
+        is already under way starts mid-slot and a start-equality test would let
+        its solar be handed out twice. Only the overlapping minutes are charged.
         """
         for s in base_slots:
             if residual.get(s.start, 0.0) <= 0:
                 continue
-            if not any(p.start <= s.start < p.end for p in periods):
+            overlap = min(
+                s.minutes,
+                sum(
+                    max(0.0, (min(p.end, s.end) - max(p.start, s.start)).total_seconds())
+                    for p in periods
+                )
+                / 60.0,
+            )
+            if overlap <= 0:
                 continue
             if draw_kw is None:
                 used = residual[s.start]
             else:
-                used = min(residual[s.start], draw_kw * (s.minutes / 60.0))
+                used = min(residual[s.start], draw_kw * (overlap / 60.0))
             residual[s.start] = max(0.0, residual[s.start] - used)
 
     async def _async_update_data(self) -> dict[str, LoadPlan]:

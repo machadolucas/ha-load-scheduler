@@ -42,6 +42,9 @@ def _rationale_attr(r: PlanRationale | None) -> dict | None:
         "solar_enabled": r.solar_enabled,
         "solar_excess_kwh": round(r.solar_excess_kwh, 3),
         "solar_minutes": round(r.solar_minutes, 1),
+        "min_service_by": (
+            dt_util.as_local(r.min_service_by).isoformat() if r.min_service_by else None
+        ),
         "boost": r.boost,
     }
 

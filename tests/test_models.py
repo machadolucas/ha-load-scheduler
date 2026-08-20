@@ -72,13 +72,64 @@ def test_build_load_params_delivered_clamps_at_zero():
     assert params.min_service_minutes == 0
 
 
-def test_horizon_window_overrides_daily_window():
-    # With a multi-day horizon the window is now → now + N hours (so the engine
-    # can defer to a cheaper next day), ignoring earliest/deadline.
+def test_horizon_alone_spans_the_whole_horizon():
+    # No earliest/deadline: the window is now → now + N hours, so the engine can
+    # defer an expensive today to a cheaper next day.
+    cfg = LoadConfig.from_subentry({"name": "X", "horizon_hours": 48})
+    now = datetime(2026, 1, 15, 20, 0, tzinfo=UTC)
+    start, end = build_load_params(cfg, now, target_minutes=60).window
+    assert start == now
+    assert end == now + timedelta(hours=48)
+
+
+def test_horizon_is_intersected_with_the_daily_window():
+    # The wizard collects earliest/deadline *and* a horizon; all three apply.
     cfg = LoadConfig.from_subentry(
         {"name": "X", "earliest": "21:00:00", "deadline": "07:00:00", "horizon_hours": 48}
     )
     now = datetime(2026, 1, 15, 20, 0, tzinfo=UTC)
     start, end = build_load_params(cfg, now, target_minutes=60).window
-    assert start == now
-    assert end == now + timedelta(hours=48)
+    assert start == datetime(2026, 1, 15, 21, 0, tzinfo=UTC)  # earliest still honoured
+    assert end == datetime(2026, 1, 16, 7, 0, tzinfo=UTC)  # deadline caps the horizon
+
+
+def test_horizon_shorter_than_the_daily_window_wins():
+    cfg = LoadConfig.from_subentry(
+        {"name": "X", "earliest": "21:00:00", "deadline": "07:00:00", "horizon_hours": 2}
+    )
+    now = datetime(2026, 1, 15, 20, 0, tzinfo=UTC)
+    start, end = build_load_params(cfg, now, target_minutes=60).window
+    assert start == datetime(2026, 1, 15, 21, 0, tzinfo=UTC)
+    assert end == now + timedelta(hours=2)
+
+
+def test_empty_intersection_yields_a_zero_length_window():
+    # Horizon ends before the daily window opens: nothing is schedulable, and the
+    # engine must get a degenerate window rather than an inverted one.
+    cfg = LoadConfig.from_subentry(
+        {"name": "X", "earliest": "21:00:00", "deadline": "07:00:00", "horizon_hours": 0.25}
+    )
+    now = datetime(2026, 1, 15, 20, 0, tzinfo=UTC)
+    start, end = build_load_params(cfg, now, target_minutes=60).window
+    assert start == end
+
+
+def test_min_service_by_is_the_next_local_midnight():
+    cfg = LoadConfig.from_subentry({"name": "X", "min_service_minutes": 30, "horizon_hours": 48})
+    now = datetime(2026, 1, 15, 20, 0, tzinfo=UTC)
+    params = build_load_params(cfg, now, target_minutes=60)
+    assert params.min_service_by == datetime(2026, 1, 16, 0, 0, tzinfo=UTC)
+
+
+def test_min_service_by_never_exceeds_the_window():
+    cfg = LoadConfig.from_subentry({"name": "X", "min_service_minutes": 30, "horizon_hours": 2})
+    now = datetime(2026, 1, 15, 20, 0, tzinfo=UTC)
+    params = build_load_params(cfg, now, target_minutes=60)
+    assert params.min_service_by == now + timedelta(hours=2)
+
+
+def test_min_service_by_absent_once_the_floor_is_delivered():
+    cfg = LoadConfig.from_subentry({"name": "X", "min_service_minutes": 30})
+    now = datetime(2026, 1, 15, 20, 0, tzinfo=UTC)
+    params = build_load_params(cfg, now, target_minutes=60, delivered_minutes=30)
+    assert params.min_service_by is None

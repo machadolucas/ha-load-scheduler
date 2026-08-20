@@ -55,6 +55,22 @@ solar entity ─┘ solar_source + baseline → excess ───┤
   every slot to UTC so all engine arithmetic is DST-free; `windows` anchors to
   local wall-clock and the coordinator passes an explicit `now`.
 - **Durations are minutes**; the final run is trimmed to the exact minute.
+- **Candidate slots are clipped to the window.** A slot straddling `now` or the
+  deadline is admitted (so a run already under way stays eligible) but only its
+  in-window part is budgeted and scheduled — otherwise the plan spends target
+  minutes on runtime that has already elapsed, or runs past the deadline. Its
+  `excess_kwh` is scaled by the same fraction, which leaves the solar blend in
+  `effective_cost` unchanged.
+- **Contiguous runs are scanned in minutes, not slot counts.** The forecast mixes
+  resolutions (quarter-hourly day-ahead, hourly predictor slots beyond it), so
+  `_best_block` walks forward accumulating real minutes and weights each slot's
+  cost by the minutes taken from it. A slot-count block size or an unweighted
+  cost sum compares an hour against a quarter-hour as if they were equal.
+- **`min_run_minutes` shapes selection, not clean-up.** With it set, a
+  non-sequential load buys whole runs (`_plan_runs`) instead of scattered slots:
+  one `min_run` at a time, the last absorbing the remainder so the target is
+  still exact. Picking the cheapest slots and *then* deleting sub-`min_run`
+  fragments threw those minutes away and left the load short.
 - **Runtime state** (target / enabled / boost) lives in the `Store` (source of
   truth, in backups); entities are views/setters over it.
 - **Actuation precedence** (per tick): manual override → low-temp safety floor →
@@ -96,15 +112,20 @@ solar entity ─┘ solar_source + baseline → excess ───┤
   the recorder: the feedback element's (or controlled entity's) on-time since
   local midnight (`async_refresh_delivered`, throttled ~2 min). It counts heating
   regardless of who started it and resets daily, so no external sensor is needed.
+  Because that reset is the accounting boundary, `LoadParams.min_service_by`
+  (the next local midnight) holds the **min-service floor** to the day it
+  protects: guaranteed minutes prefer slots finishing before it, falling back to
+  the rest of the window only rather than going unmet.
 - **Schedule rationale** — the per-load `LoadPlan` also captures the planning
   math the coordinator would otherwise discard (`delivered_minutes`,
   `remaining_minutes`, `min_service_remaining`, `boost_until`, `solar_enabled`,
   `scheduled_minutes`, `est_cost`); `sensor.<load>_schedule` surfaces these plus a
   flat static `config` summary for the diagnostic card. The bulky `periods` and
   `config` attributes are excluded from the recorder (`_unrecorded_attributes`).
-- **Multi-day horizon** — a load with `horizon_hours` searches `now → now+N h`
-  instead of a daily window, so the engine can defer an expensive day to a
-  cheaper next one. The coordinator's `_price_slots` appends an optional
+- **Multi-day horizon** — a load with `horizon_hours` searches `now → now+N h`,
+  **intersected** with its `earliest`/`deadline` window when either is set, so the
+  engine can defer an expensive day to a cheaper next one without escaping the
+  daily window the wizard collected. The coordinator's `_price_slots` appends an optional
   predictor **forecast entity**'s slots for times *beyond* the real day-ahead
   horizon (filtered to `start > last real slot`), adding a confidence margin to
   their buy price so a forecast window only wins when it's cheaper by more than

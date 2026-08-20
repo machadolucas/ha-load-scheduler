@@ -60,7 +60,15 @@ calendar-bus + solar-divert automations on the author's home server (the
   excess, blended when partial.
 - `min_service_minutes` is a cap-exempt floor: `target = max(target,
   min_service)`, and the price `cap` only filters discretionary minutes above
-  the floor. Dynamic remaining subtracts delivered-today from both.
+  the floor. Dynamic remaining subtracts delivered-today from both. Because
+  delivered-today resets at local midnight, `min_service_by` (that boundary)
+  pulls the floor into the day it protects — preferring, never requiring.
+- Candidate slots are **clipped to the window**, so a half-elapsed or
+  past-the-deadline slot is only budgeted for its in-window minutes.
+- Contiguous runs come from `_best_block`, which scans by **real minutes** and
+  weights cost by minutes taken — the forecast mixes 15-min and hourly slots.
+- `min_run_minutes` is enforced during selection (`_plan_runs` buys whole runs),
+  not by deleting short fragments afterwards.
 
 ## Control & safety model (do not regress)
 

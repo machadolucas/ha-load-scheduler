@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
+import pytest
 from homeassistant.config_entries import ConfigSubentryData
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
@@ -11,6 +12,8 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.load_scheduler.const import DOMAIN, SUBENTRY_TYPE_LOAD
+from custom_components.load_scheduler.coordinator import LoadSchedulerCoordinator
+from custom_components.load_scheduler.engine import Period, RunSource, Slot
 
 
 def _price_attrs(base) -> dict:
@@ -169,3 +172,28 @@ async def test_solar_allocation_by_priority(hass: HomeAssistant) -> None:
 
     assert source_of("High") == "solar"
     assert source_of("Low") == "grid"
+
+
+def _solar_slot() -> Slot:
+    t0 = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    return Slot(start=t0, end=t0 + timedelta(hours=1), buy=0.2, sell=0.05, excess_kwh=4.0)
+
+
+def test_consume_excess_charges_a_run_already_under_way() -> None:
+    # The engine clips the in-progress slot to `now`, so the period starts
+    # mid-slot. Matching on the slot boundary would leave that slot's excess
+    # untouched and let a lower-priority load claim the same kWh twice.
+    slot = _solar_slot()
+    residual = {slot.start: 4.0}
+    # A 4 kW load running the last half-hour of the slot uses 2 kWh of it.
+    running = [Period(slot.start + timedelta(minutes=30), slot.end, RunSource.SOLAR, 0.05)]
+    LoadSchedulerCoordinator._consume_excess(residual, [slot], running, 4.0)
+    assert residual[slot.start] == pytest.approx(2.0)
+
+
+def test_consume_excess_ignores_a_period_that_misses_the_slot() -> None:
+    slot = _solar_slot()
+    residual = {slot.start: 4.0}
+    elsewhere = [Period(slot.end, slot.end + timedelta(minutes=30), RunSource.GRID, 0.2)]
+    LoadSchedulerCoordinator._consume_excess(residual, [slot], elsewhere, 4.0)
+    assert residual[slot.start] == pytest.approx(4.0)
