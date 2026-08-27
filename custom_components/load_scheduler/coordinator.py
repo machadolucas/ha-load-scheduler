@@ -30,7 +30,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from . import baseline as baseline_mod
-from . import engine, price_source, rationale, solar_source
+from . import competing, engine, price_source, rationale, solar_source
 from .const import (
     CONF_BASELINE_ENTITY,
     CONF_BUY_PRICE_ENTITY,
@@ -42,6 +42,7 @@ from .const import (
     DEFAULT_BASELINE_W,
     DEFAULT_FORECAST_PRICE_MARGIN,
     DOMAIN,
+    ISSUE_COMPETING_CONTROLLER,
     ISSUE_PRICE_GAP,
     ISSUE_PRICE_UNAVAILABLE,
     UPDATE_INTERVAL_MINUTES,
@@ -170,6 +171,10 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         )
         # Per-load runtime state, keyed by subentry_id.
         self.runtime: dict[str, LoadRuntime] = {}
+        # Foreign changes seen on each load's controlled entity (see
+        # `competing.py`). Persisted alongside the runtime: the pattern only
+        # emerges over days, and the user chasing it will restart HA meanwhile.
+        self.foreign_log: dict[str, list[competing.ForeignEvent]] = {}
         self._store = RuntimeStore(hass, entry.entry_id)
         self._init_runtime()
         # Set by __init__.py once the actuator is built (for stop-backoff wiring).
@@ -194,6 +199,11 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
                 enabled=saved.get("enabled", True),
                 boost_until=dt_util.parse_datetime(boost_raw) if boost_raw else None,
             )
+            self.foreign_log[subentry_id] = [
+                ev
+                for raw in saved.get("foreign_events", [])
+                if (ev := competing.ForeignEvent.from_dict(raw)) is not None
+            ]
 
     def _runtime_snapshot(self) -> dict:
         return {
@@ -201,6 +211,7 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
                 "target_minutes": rt.target_minutes,
                 "enabled": rt.enabled,
                 "boost_until": rt.boost_until.isoformat() if rt.boost_until else None,
+                "foreign_events": [ev.as_dict() for ev in self.foreign_log.get(sid, [])],
             }
             for sid, rt in self.runtime.items()
         }
@@ -266,6 +277,73 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
                 "first_slot": dt_util.as_local(first).isoformat(timespec="minutes"),
             },
         )
+
+    @callback
+    def note_foreign_change(self, subentry_id: str, ev: competing.ForeignEvent) -> None:
+        """Record a foreign change to a load's controlled entity and re-assess.
+
+        Called by the actuator for every change it did not make itself. The log
+        is pruned on the way in so it can never outgrow its window or its cap.
+        """
+        self.foreign_log[subentry_id] = competing.prune(
+            [*self.foreign_log.get(subentry_id, []), ev], ev.when
+        )
+        self._store.async_schedule_save(self._runtime_snapshot)
+        self._update_competing_issue(subentry_id)
+
+    @callback
+    def _update_competing_issue(self, subentry_id: str) -> None:
+        """Raise/clear "something else is driving this load" for one load."""
+        subentry = self.config_entry.subentries.get(subentry_id)
+        if subentry is None:
+            return
+        issue_id = f"{ISSUE_COMPETING_CONTROLLER}_{subentry_id}"
+        verdict = competing.assess(
+            self.foreign_log.get(subentry_id, []),
+            dt_util.utcnow(),
+            dt_util.get_default_time_zone(),
+        )
+        if not verdict.competing:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return
+        cfg = LoadConfig.from_subentry(subentry.data)
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_COMPETING_CONTROLLER,
+            translation_placeholders={
+                "name": subentry.title,
+                "entity": cfg.controlled_entity or "",
+                "count": str(verdict.count),
+                "scripted": str(verdict.scripted_count),
+                "in_period": str(verdict.in_period_count),
+                "last_change": dt_util.as_local(verdict.last).isoformat(timespec="minutes"),
+            },
+        )
+
+    @callback
+    def _refresh_competing_issues(self) -> None:
+        """Re-assess every load's foreign-change log on the periodic tick.
+
+        Evidence decays with *time*, not with new events, so without this an
+        issue raised by an automation that has since been disabled would sit
+        there forever — the very silence the detector exists to break.
+        """
+        for subentry_id in list(self.foreign_log):
+            if subentry_id not in self.config_entry.subentries:
+                # Load removed: forget its history and the issue it left behind.
+                del self.foreign_log[subentry_id]
+                ir.async_delete_issue(
+                    self.hass, DOMAIN, f"{ISSUE_COMPETING_CONTROLLER}_{subentry_id}"
+                )
+                continue
+            self.foreign_log[subentry_id] = competing.prune(
+                self.foreign_log[subentry_id], dt_util.utcnow()
+            )
+            self._update_competing_issue(subentry_id)
 
     @callback
     def async_setup_listeners(self) -> None:
@@ -613,6 +691,7 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         now = dt_util.now()  # local: windows anchor to wall-clock
         now_utc = dt_util.utcnow()
         self._update_price_gap_issue(base_slots, now_utc)
+        self._refresh_competing_issues()
         await self._maybe_refresh_delivered(now_utc)
 
         # Solar loads first, highest priority first: they claim excess before

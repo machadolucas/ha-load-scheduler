@@ -10,8 +10,14 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 
+from . import competing
 from .coordinator import LoadSchedulerConfigEntry
+
+# Enough recent foreign changes to see the pattern the verdict is claiming,
+# without turning the dump into a log file.
+_FOREIGN_EVENTS_SHOWN = 10
 
 
 async def async_get_config_entry_diagnostics(
@@ -21,10 +27,15 @@ async def async_get_config_entry_diagnostics(
     coordinator = entry.runtime_data
     plans = coordinator.data or {}
 
+    now = dt_util.utcnow()
+    tz = dt_util.get_default_time_zone()
+
     loads: dict[str, Any] = {}
     for subentry_id, subentry in entry.subentries.items():
         rt = coordinator.runtime.get(subentry_id)
         plan = plans.get(subentry_id)
+        foreign = coordinator.foreign_log.get(subentry_id, [])
+        verdict = competing.assess(foreign, now, tz)
         loads[subentry_id] = {
             "title": subentry.title,
             "config": dict(subentry.data),
@@ -48,6 +59,21 @@ async def async_get_config_entry_diagnostics(
                     }
                     for p in plan.periods
                 ],
+            },
+            # Who else has been driving this load's switch, and the verdict the
+            # repair issue is (or isn't) based on — the first thing to check
+            # when a plan looks right but the load doesn't follow it.
+            "foreign_changes": {
+                "verdict": {
+                    "competing": verdict.competing,
+                    "reason": verdict.reason,
+                    "count": verdict.count,
+                    "scripted_count": verdict.scripted_count,
+                    "in_period_count": verdict.in_period_count,
+                    "recurring_days": verdict.recurring_days,
+                    "last": verdict.last.isoformat() if verdict.last else None,
+                },
+                "events": [ev.as_dict() for ev in foreign[-_FOREIGN_EVENTS_SHOWN:]],
             },
         }
 

@@ -1,0 +1,27 @@
+boost:
+  name: Boost a load
+  description: >-
+    Runs a scheduled load now for a given duration, overriding both the price
+    plan and the load's enable switch — the same override the load's Boost
+    button applies, but with an explicit duration so automations can ask for
+    exactly as much heat as they need.
+  target:
+    device:
+      integration: load_scheduler
+    entity:
+      integration: load_scheduler
+  fields:
+    minutes:
+      name: Duration
+      description: >-
+        How long to run, in minutes. Defaults to the load's current target
+        runtime, or 60 minutes when its target is zero.
+      required: false
+      example: 90
+      selector:
+        number:
+          min: 5
+          max: 1440
+          step: 5
+          unit_of_measurement: min
+          mode: box

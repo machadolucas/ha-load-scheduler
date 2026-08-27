@@ -40,6 +40,7 @@ calendar-bus + solar-divert automations on the author's home server (the
 | `models.py` | Subentry config → `LoadConfig` → `LoadParams` (target conversion, dynamic remaining) | no |
 | `rationale.py` | **Pure** decision facts (skip reason, cap-qualifying slots, solar coverage) the diagnostic card narrates | no |
 | `divert.py` | **Pure** real-time divert decision: predicted interval-net + load-aware engage/shed, priority-preserving | no |
+| `competing.py` | **Pure** competing-controller verdict: burst / same-local-time recurrence over a decaying 7-day log of foreign flips | no |
 | `coordinator.py` | Read sources, allocate solar by priority, run engine per load, statistics baseline, repairs, failsafe | yes |
 | `actuation.py` | Resolve desired state + drive controlled entities, real-time divert, restart catch-up | yes |
 | `persistence.py` | `Store` for runtime (target / enabled / boost) | yes |

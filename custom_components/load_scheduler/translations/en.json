@@ -176,6 +176,10 @@
     "price_gap": {
       "title": "Load Scheduler: price forecast has a gap",
       "description": "The price sensor ({entity}) is returning prices, but none of them cover the current time - the earliest slot starts at {first_slot}. Loads cannot be scheduled until then. This usually means the forecast is anchored to a market day that starts later than local midnight, or that the sensor is lagging. Scheduling resumes automatically once a covering slot appears."
+    },
+    "competing_controller": {
+      "title": "Load Scheduler: another controller is driving {name}",
+      "description": "The controlled entity {entity} keeps being switched by something other than Load Scheduler: {count} foreign changes in the last 7 days ({scripted} from an automation or script, {in_period} during a scheduled period), most recently {last_change}. Each foreign off suppresses the rest of that scheduled period, so scheduling for this load is silently degraded. Find and disable the competing automation, or mark the load as coexist if the overlap is intentional. This issue clears automatically about a week after the foreign changes stop."
     }
   }
 }

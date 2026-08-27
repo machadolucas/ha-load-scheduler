@@ -41,6 +41,8 @@ solar entity ─┘ solar_source + baseline → excess ───┤
 | `baseline.py` | Hour-of-day consumption profile from samples | no |
 | `models.py` | Subentry config → `LoadConfig` → `LoadParams` | no |
 | `rationale.py` | Pure decision facts (skip reason, cap-qualifying slots, solar coverage) for the diagnostic card's plain-English narration | no |
+| `divert.py` | Pure real-time divert decision: predicted interval-close net, load-aware engage/shed, priority-preserving | no |
+| `competing.py` | Pure competing-controller verdict: burst / same-local-time recurrence over a decaying 7-day log of foreign flips | no |
 | `coordinator.py` | Read sources, allocate solar by priority, run engine per load, repairs, statistics baseline | yes |
 | `actuation.py` | Resolve desired state (override → safety → plan → divert), drive controlled entities, restart catch-up | yes |
 | `persistence.py` | `Store` for runtime (target/enabled/boost) | yes |

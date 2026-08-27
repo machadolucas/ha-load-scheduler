@@ -39,13 +39,14 @@ import logging
 from datetime import datetime, timedelta
 
 from homeassistant.const import SERVICE_TURN_OFF, SERVICE_TURN_ON
-from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.core import Context, Event, HomeAssistant, callback
 from homeassistant.helpers.event import (
     async_track_point_in_time,
     async_track_state_change_event,
 )
 from homeassistant.util import dt as dt_util
 
+from .competing import SOURCE_SCRIPTED, SOURCE_UNKNOWN, SOURCE_USER, ForeignEvent
 from .const import (
     CONF_LIVE_SELL_ENTITY,
     CONF_NET_ENERGY_ENTITY,
@@ -76,6 +77,24 @@ def _as_float(state) -> float | None:
         return float(state.state)
     except (TypeError, ValueError):
         return None
+
+
+def _change_source(context: Context | None) -> str:
+    """Classify who made a change from its event context.
+
+    A ``user_id`` means a person acted in the UI; a bare ``parent_id`` means the
+    change was spawned by something else — an automation, script or scene.
+    *Which* one cannot be recovered from an integration: there is no public
+    context → entity lookup, so the repair issue names the pattern and leaves
+    finding the culprit to the automation traces.
+    """
+    if context is None:
+        return SOURCE_UNKNOWN
+    if context.user_id:
+        return SOURCE_USER
+    if context.parent_id:
+        return SOURCE_SCRIPTED
+    return SOURCE_UNKNOWN
 
 
 class LoadActuator:
@@ -181,6 +200,22 @@ class LoadActuator:
             )
             if ours:
                 return
+            plan = (self._coordinator.data or {}).get(sid)
+            active = plan.active_period(now) if plan else None
+            # Log it for competing-controller detection, but only a genuine
+            # on↔off flip: restart and connectivity churn ("unknown" → "off")
+            # is nobody driving the load, and would drown out the real pattern.
+            old = event.data.get("old_state")
+            if old is not None and {old.state, new.state} == {"on", "off"}:
+                self._coordinator.note_foreign_change(
+                    sid,
+                    ForeignEvent(
+                        when=now,
+                        turned_on=is_on,
+                        in_active_period=active is not None,
+                        source=_change_source(event.context),
+                    ),
+                )
             grace_until = now + timedelta(seconds=MANUAL_OVERRIDE_GRACE_S)
             if is_on:
                 # Manual ON: don't immediately undo it; the run is credited via
@@ -191,8 +226,6 @@ class LoadActuator:
                 # Manual OFF: stop the current run. Suppress the rest of the
                 # active period (not just the short grace) and cancel any boost,
                 # so the load does not pop back on.
-                plan = (self._coordinator.data or {}).get(sid)
-                active = plan.active_period(now) if plan else None
                 self._override_until[sid] = max(active.end, grace_until) if active else grace_until
                 self._driven.discard(sid)
                 rt = self._coordinator.runtime.get(sid)

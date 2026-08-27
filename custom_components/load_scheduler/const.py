@@ -140,3 +140,13 @@ EVENT_RUN_ENDED = "load_scheduler_run_ended"
 # Repair issues.
 ISSUE_PRICE_UNAVAILABLE = "price_unavailable"
 ISSUE_PRICE_GAP = "price_gap"
+# Raised per load (suffixed with the subentry id): something other than the
+# scheduler keeps driving the controlled entity. See `competing.py`.
+ISSUE_COMPETING_CONTROLLER = "competing_controller"
+
+# ── Services ─────────────────────────────────────────────────────────────────
+SERVICE_BOOST = "boost"
+ATTR_MINUTES = "minutes"
+# Bounds for the service's optional duration (the button has no such knob).
+BOOST_MIN_MINUTES = 5
+BOOST_MAX_MINUTES = 1440
