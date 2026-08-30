@@ -45,6 +45,9 @@ async def async_get_config_entry_diagnostics(
                 "target_minutes": rt.target_minutes,
                 "enabled": rt.enabled,
                 "boost_until": rt.boost_until.isoformat() if rt.boost_until else None,
+                # Whether the integration holds this run — the fact that decides
+                # if a coexist load will ever be switched off again.
+                "driven": rt.driven,
             },
             "plan": None
             if plan is None

@@ -95,6 +95,13 @@ DEFAULT_SELL_THRESHOLD = 0.05
 
 # Real-time control timing.
 MANUAL_OVERRIDE_GRACE_S = 600  # back off this long after a foreign (manual) change
+# How long a command we issued may stay unconfirmed before we stop expecting its
+# echo. Attribution is *not* done by this window (the first controlled-entity
+# change matching the commanded state is our echo, however late it lands — see
+# `actuation._claim_pending`); this only bounds the damage of a command that is
+# never confirmed at all, e.g. an offline relay. Generous on purpose: no relay
+# confirms 15 minutes later, but plenty confirm later than a few seconds.
+COMMAND_PENDING_S = 900
 # Asymmetric anti-thrash dwell: slow to engage (protects relays), quick to shed
 # (so a mispredicted import doesn't linger). Relay protection comes from the
 # predictive accuracy + hysteresis, not from a long dwell — a shorter dwell would
@@ -143,6 +150,14 @@ ISSUE_PRICE_GAP = "price_gap"
 # Raised per load (suffixed with the subentry id): something other than the
 # scheduler keeps driving the controlled entity. See `competing.py`.
 ISSUE_COMPETING_CONTROLLER = "competing_controller"
+# Raised per load (suffixed with the subentry id): a coexist load has been on,
+# outside every scheduled period and with the integration not owning the run,
+# for longer than the threshold below — so *nothing* will ever switch it off.
+ISSUE_UNOWNED_RUN = "unowned_run"
+# Long enough that a real comfort/manual run (a floor-heating evening, a long
+# tank reheat) never trips it, short enough to be noticed the same day. The
+# failure it exists to break was silent for three days.
+UNOWNED_RUN_HOURS = 6
 
 # ── Services ─────────────────────────────────────────────────────────────────
 SERVICE_BOOST = "boost"

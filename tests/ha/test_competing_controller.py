@@ -170,15 +170,19 @@ async def test_issue_clears_on_decay(hass: HomeAssistant, freezer) -> None:
     assert _issue(hass, subentry_id) is None
 
 
-async def test_foreign_log_persists_across_reload(hass: HomeAssistant) -> None:
+async def test_foreign_log_persists_across_reload(hass: HomeAssistant, freezer) -> None:
     entry = await _setup(hass)
     subentry_id = next(iter(entry.subentries))
     await _foreign_flip(hass, Context(parent_id="deadbeef"))
     before = entry.runtime_data.foreign_log[subentry_id]
     assert len(before) == 1
 
-    # Flush the debounced Store write, then reload the hub.
-    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=SAVE_DELAY + 1))
+    # Flush the debounced Store write, then reload the hub. The clock has to
+    # really move: a Store that was asked to save twice (here: the run the
+    # actuator started, then this foreign change) defers its pending write to
+    # the later deadline, which a bare `async_fire_time_changed` can't reach.
+    freezer.tick(timedelta(seconds=SAVE_DELAY + 1))
+    async_fire_time_changed(hass, dt_util.utcnow())
     await hass.async_block_till_done()
     await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()

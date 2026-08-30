@@ -180,6 +180,10 @@
     "competing_controller": {
       "title": "Load Scheduler: another controller is driving {name}",
       "description": "The controlled entity {entity} keeps being switched by something other than Load Scheduler: {count} foreign changes in the last 7 days ({scripted} from an automation or script, {in_period} during a scheduled period), most recently {last_change}. Each foreign off suppresses the rest of that scheduled period, so scheduling for this load is silently degraded. Find and disable the competing automation, or mark the load as coexist if the overlap is intentional. This issue clears automatically about a week after the foreign changes stop."
+    },
+    "unowned_run": {
+      "title": "Load Scheduler: {name} is on and nothing will switch it off",
+      "description": "The controlled entity {entity} has been on since {since} - over {hours} hours - outside every scheduled period, and Load Scheduler is not the one that switched it on. Because this load is marked as coexist, the integration never switches off a run it did not start, so nothing will ever turn it off: it will keep running until somebody does. This usually means a run was started before a restart, or by another controller that then stopped watching it. Either switch the load off yourself, or turn off \"Coexist with external control (top-up only)\" for this load so the scheduler owns it and can switch it off at the end of a period. This issue clears as soon as the load goes off."
     }
   }
 }

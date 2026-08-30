@@ -85,7 +85,13 @@ solar entity ─┘ solar_source + baseline → excess ───┤
   an externally-started run (a comfort automation, a manual flip). Lets it add
   cheap/green energy on top of existing control without fighting it. The
   `running` binary sensor reflects the **actual controlled-entity state**, not the
-  plan, so an override shows the truth.
+  plan, so an override shows the truth. Ownership of a run (`LoadRuntime.driven`)
+  is **persisted**, so a restart mid-run doesn't disown it — an in-memory-only
+  flag left such a load on forever. So does slow confirmation: a command counts
+  as ours until the entity actually moves (`_claim_pending`), not for a few
+  seconds. When a coexist load *is* left on unowned outside every period for
+  `UNOWNED_RUN_HOURS`, the `unowned_run` repair says so, because nothing else
+  will ever switch it off.
 - **Solar excess** = forecast PV − baseline; allocated to loads highest-priority
   first against a shared residual so no kWh is double-counted.
 - **Real-time divert** (pure decision in `divert.py`). With a **predicted

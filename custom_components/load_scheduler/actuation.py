@@ -19,7 +19,9 @@ The desired on/off for a load at any instant is resolved by precedence:
 only switches such a load *off* if it was the one that switched it *on*. This
 lets it add cheap/green energy on top of an external control (e.g. floor-heating
 comfort automations) without ever fighting it — external on-runs are observed
-and credited, never cut short.
+and credited, never cut short. That ownership is persisted with the rest of the
+runtime (``LoadRuntime.driven``), so a run in progress across a restart stays
+ours and still gets switched off at the end of its period.
 
 This also gives restart catch-up: ``async_start`` reconciles once on setup.
 
@@ -48,6 +50,7 @@ from homeassistant.util import dt as dt_util
 
 from .competing import SOURCE_SCRIPTED, SOURCE_UNKNOWN, SOURCE_USER, ForeignEvent
 from .const import (
+    COMMAND_PENDING_S,
     CONF_LIVE_SELL_ENTITY,
     CONF_NET_ENERGY_ENTITY,
     CONF_NET_EXPORT_THRESHOLD,
@@ -67,7 +70,6 @@ from .divert import DivertCandidate, decide_divert
 from .models import LoadConfig
 
 _LOGGER = logging.getLogger(__name__)
-_COMMAND_WINDOW_S = 5  # a controlled-entity change within this of our command is "ours"
 
 
 def _as_float(state) -> float | None:
@@ -115,11 +117,13 @@ class LoadActuator:
         self._diverted: set[str] = set()
         self._last_divert_change: datetime | None = None
         self._override_until: dict[str, datetime] = {}
-        self._last_command: dict[str, tuple[bool, datetime]] = {}
-        # Loads the integration currently holds ON (a run it started). Used so a
-        # coexist load is only ever switched off by the integration if it was the
-        # one that switched it on.
-        self._driven: set[str] = set()
+        # Commands we sent whose effect on the controlled entity we haven't seen
+        # yet: subentry_id → (commanded state, when). See `_claim_pending`.
+        self._pending_command: dict[str, tuple[bool, datetime]] = {}
+        # When each controlled entity's current on-run started (UTC). Only the
+        # unowned-run repair needs it; a run that predates this actuator falls
+        # back to the state machine's stamp (see `_run_on_since`).
+        self._on_since: dict[str, datetime] = {}
         self._unsub_boundary = None
         self._unsubs: list = []
 
@@ -132,9 +136,28 @@ class LoadActuator:
             self._unsubs.append(
                 async_track_state_change_event(self._hass, watched, self._async_on_event)
             )
+        self._sync_driven_with_reality()
         self._update_divert()
         await self._reconcile()
         self._schedule_next_boundary()
+
+    def _sync_driven_with_reality(self) -> None:
+        """Drop ownership claims restored from the Store that reality contradicts.
+
+        The persisted flag means "the run going on right now is one we started",
+        so it only stays true while the load is actually on: if it is off, that
+        run has ended (someone switched it off, or HA was down past its end) and
+        the claim is void. The reverse — a run started externally while HA was
+        down — is indistinguishable from our own surviving run, so ownership is
+        kept there; it self-corrects on the first foreign change to the entity.
+        """
+        for sid in self._coordinator.config_entry.subentries:
+            if not self._is_driven(sid):
+                continue
+            entity_id = self._coordinator.load_config(sid).controlled_entity
+            state = self._hass.states.get(entity_id) if entity_id else None
+            if state is None or state.state != "on":
+                self._coordinator.note_driven(sid, False)
 
     @callback
     def async_handle_update(self) -> None:
@@ -181,6 +204,37 @@ class LoadActuator:
             self._hass, self._reconcile(), "ls_reconcile"
         )
 
+    def _is_driven(self, sid: str) -> bool:
+        """Whether the integration currently holds this load's run ON."""
+        rt = self._coordinator.runtime.get(sid)
+        return rt is not None and rt.driven
+
+    def _claim_pending(self, sid: str, is_on: bool, now: datetime) -> bool:
+        """Whether this change is the confirmation of our own last command.
+
+        Attribution is by *pendingness*, not by a clock window: a command stays
+        pending until the controlled entity actually moves, and the first move
+        matching what we commanded is our own echo however late it lands. The
+        old fixed 5-second window mis-read a Shelly/Zigbee/cloud relay (or a
+        busy event loop) confirming a second too late as a **manual on**, which
+        set an override *and dropped ownership* — so a run we had started became
+        unownable and nothing would ever switch it off again.
+
+        The entry is dropped as soon as the entity moves, either way, so a later
+        genuine manual flip to the same state is correctly read as foreign. The
+        expiry only bounds a command that is never confirmed at all.
+        """
+        pending = self._pending_command.pop(sid, None)
+        if pending is None:
+            return False
+        commanded, sent = pending
+        if (now - sent).total_seconds() > COMMAND_PENDING_S:
+            return False
+        # Moved the other way: our command was overridden or never landed. It is
+        # no longer pending either way (already popped), and this change is not
+        # ours.
+        return commanded == is_on
+
     def _note_controlled_change(self, entity_id, event: Event) -> None:
         """Detect a manual (foreign) change to a controlled entity and react."""
         now = dt_util.utcnow()
@@ -189,23 +243,25 @@ class LoadActuator:
             if cfg.controlled_entity != entity_id:
                 continue
             new = event.data.get("new_state")
+            old = event.data.get("old_state")
             if new is None:
                 return
+            # Only a real on↔off transition is somebody driving the load. An
+            # attribute-only change (old.state == new.state) or a drop to
+            # unavailable/unknown must not be read as a manual *off*: that would
+            # suppress the rest of the period and disown a run we started, for a
+            # flaky relay that nobody touched.
+            if new.state not in ("on", "off") or (old is not None and old.state == new.state):
+                return
             is_on = new.state == "on"
-            cmd = self._last_command.get(sid)
-            ours = (
-                cmd is not None
-                and cmd[0] == is_on
-                and (now - cmd[1]).total_seconds() < _COMMAND_WINDOW_S
-            )
-            if ours:
+            self._note_on_since(sid, is_on, now)
+            if self._claim_pending(sid, is_on, now):
                 return
             plan = (self._coordinator.data or {}).get(sid)
             active = plan.active_period(now) if plan else None
             # Log it for competing-controller detection, but only a genuine
             # on↔off flip: restart and connectivity churn ("unknown" → "off")
             # is nobody driving the load, and would drown out the real pattern.
-            old = event.data.get("old_state")
             if old is not None and {old.state, new.state} == {"on", "off"}:
                 self._coordinator.note_foreign_change(
                     sid,
@@ -221,13 +277,13 @@ class LoadActuator:
                 # Manual ON: don't immediately undo it; the run is credited via
                 # the measured delivered sensor. It's not a run we started.
                 self._override_until[sid] = grace_until
-                self._driven.discard(sid)
+                self._coordinator.note_driven(sid, False)
             else:
                 # Manual OFF: stop the current run. Suppress the rest of the
                 # active period (not just the short grace) and cancel any boost,
                 # so the load does not pop back on.
                 self._override_until[sid] = max(active.end, grace_until) if active else grace_until
-                self._driven.discard(sid)
+                self._coordinator.note_driven(sid, False)
                 rt = self._coordinator.runtime.get(sid)
                 if rt is not None and rt.boost_until and now < rt.boost_until:
                     self._coordinator.config_entry.async_create_task(
@@ -237,6 +293,44 @@ class LoadActuator:
                 "Manual override (%s) on %s; backing off", "on" if is_on else "off", entity_id
             )
             return
+
+    # ── run ownership / duration facts ───────────────────────────────────────
+
+    @callback
+    def _note_on_since(self, sid: str, is_on: bool, now: datetime) -> None:
+        """Remember when the current on-run started, whoever started it."""
+        if is_on:
+            self._on_since.setdefault(sid, now)
+        else:
+            self._on_since.pop(sid, None)
+
+    def _run_on_since(self, sid: str, entity_id: str) -> datetime | None:
+        """When the load's current on-run started (UTC), or None if it's off."""
+        state = self._hass.states.get(entity_id)
+        if state is None or state.state != "on":
+            return None
+        # A run that was already going when this actuator started has no tracked
+        # stamp; fall back to the state machine's. HA re-stamps `last_changed`
+        # on restart, so the elapsed time (and any threshold measured from it)
+        # restarts with HA — the tracked stamp takes over from the next real
+        # transition, and a run stuck on will trip the threshold on the next day
+        # anyway.
+        return self._on_since.get(sid) or state.last_changed
+
+    @callback
+    def unowned_on_since(self, sid: str) -> datetime | None:
+        """When the load's current *unowned* on-run started, else None.
+
+        Unowned = the controlled entity is on but the integration did not start
+        it, so nothing the integration does will ever switch it off. The
+        coordinator pairs this with the plan to decide whether that is a run in
+        progress or a load nobody is going to stop (see
+        ``_update_unowned_run_issue``).
+        """
+        cfg = self._coordinator.load_config(sid)
+        if not cfg.controlled_entity or self._is_driven(sid):
+            return None
+        return self._run_on_since(sid, cfg.controlled_entity)
 
     # ── real-time divert ─────────────────────────────────────────────────────
 
@@ -381,7 +475,7 @@ class LoadActuator:
         night). After the grace, normal scheduling/divert resumes.
         """
         self._override_until[sid] = dt_util.utcnow() + timedelta(seconds=MANUAL_OVERRIDE_GRACE_S)
-        self._driven.discard(sid)
+        self._coordinator.note_driven(sid, False)
         self._diverted.discard(sid)
 
     def _desired_on(self, sid: str, cfg: LoadConfig) -> bool | None:
@@ -416,14 +510,11 @@ class LoadActuator:
         is_on = state is not None and state.state == "on"
         if desired_on == is_on:
             return
-        if not desired_on and cfg.coexist and sid not in self._driven:
+        if not desired_on and cfg.coexist and not self._is_driven(sid):
             # Coexist (top-up): never switch off a run we didn't start.
             return
-        self._last_command[sid] = (desired_on, dt_util.utcnow())
-        if desired_on:
-            self._driven.add(sid)
-        else:
-            self._driven.discard(sid)
+        self._pending_command[sid] = (desired_on, dt_util.utcnow())
+        self._coordinator.note_driven(sid, desired_on)
         await self._hass.services.async_call(
             "homeassistant",
             SERVICE_TURN_ON if desired_on else SERVICE_TURN_OFF,

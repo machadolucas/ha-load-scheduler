@@ -45,6 +45,8 @@ from .const import (
     ISSUE_COMPETING_CONTROLLER,
     ISSUE_PRICE_GAP,
     ISSUE_PRICE_UNAVAILABLE,
+    ISSUE_UNOWNED_RUN,
+    UNOWNED_RUN_HOURS,
     UPDATE_INTERVAL_MINUTES,
 )
 from .engine import Period, RunSource
@@ -104,6 +106,14 @@ class LoadRuntime:
     target_minutes: float
     enabled: bool = True
     boost_until: datetime | None = None
+    # True while the integration itself holds this load's run ON. It lives here,
+    # in the persisted runtime, rather than in the actuator's memory because a
+    # coexist load is only ever switched *off* by the integration if it was the
+    # one that switched it *on*: an in-memory-only flag makes every restart or
+    # reload disown a run in progress, and the load then stays on forever
+    # (observed on the author's floor heating for three days). One source of
+    # truth, mutated through `note_driven` so the debounced save can't drift.
+    driven: bool = False
 
 
 @dataclass
@@ -198,6 +208,7 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
                 target_minutes=saved.get("target_minutes", cfg.target_minutes),
                 enabled=saved.get("enabled", True),
                 boost_until=dt_util.parse_datetime(boost_raw) if boost_raw else None,
+                driven=saved.get("driven", False),
             )
             self.foreign_log[subentry_id] = [
                 ev
@@ -211,6 +222,7 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
                 "target_minutes": rt.target_minutes,
                 "enabled": rt.enabled,
                 "boost_until": rt.boost_until.isoformat() if rt.boost_until else None,
+                "driven": rt.driven,
                 "foreign_events": [ev.as_dict() for ev in self.foreign_log.get(sid, [])],
             }
             for sid, rt in self.runtime.items()
@@ -279,6 +291,21 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         )
 
     @callback
+    def note_driven(self, subentry_id: str, driven: bool) -> None:
+        """Record whether the integration currently holds this load's run ON.
+
+        Called by the actuator for every ownership change. Persisted through the
+        same debounced save as the rest of the runtime — writes happen only on a
+        real transition (a command it actually sent, or a foreign change), never
+        on a tick, so this cannot turn into a write per reconcile.
+        """
+        rt = self.runtime.get(subentry_id)
+        if rt is None or rt.driven == driven:
+            return
+        rt.driven = driven
+        self._store.async_schedule_save(self._runtime_snapshot)
+
+    @callback
     def note_foreign_change(self, subentry_id: str, ev: competing.ForeignEvent) -> None:
         """Record a foreign change to a load's controlled entity and re-assess.
 
@@ -325,6 +352,46 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         )
 
     @callback
+    def _update_unowned_run_issue(
+        self, subentry_id: str, cfg: LoadConfig, plan: LoadPlan, now_utc: datetime
+    ) -> None:
+        """Flag a coexist load that is on with nobody left to switch it off.
+
+        A coexist load is deliberately never switched off by the integration
+        unless it started the run — so an unowned run outside every scheduled
+        period ends only when whoever started it says so. If nobody does, the
+        load simply stays on: no error, no wrong plan, just a heater burning for
+        days (exactly how the lost-ownership bug hid). The actuator owns the
+        on-since/ownership facts; this only decides when the silence is long
+        enough to be worth breaking.
+        """
+        issue_id = f"{ISSUE_UNOWNED_RUN}_{subentry_id}"
+        since = self.actuator.unowned_on_since(subentry_id) if self.actuator is not None else None
+        stuck = (
+            cfg.coexist
+            and since is not None
+            and plan.active_period(now_utc) is None
+            and (now_utc - since) >= timedelta(hours=UNOWNED_RUN_HOURS)
+        )
+        if not stuck:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_UNOWNED_RUN,
+            translation_placeholders={
+                "name": self.config_entry.subentries[subentry_id].title,
+                "entity": cfg.controlled_entity or "",
+                "hours": str(UNOWNED_RUN_HOURS),
+                "since": dt_util.as_local(since).isoformat(timespec="minutes"),
+            },
+        )
+
+    @callback
     def _refresh_competing_issues(self) -> None:
         """Re-assess every load's foreign-change log on the periodic tick.
 
@@ -339,6 +406,7 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
                 ir.async_delete_issue(
                     self.hass, DOMAIN, f"{ISSUE_COMPETING_CONTROLLER}_{subentry_id}"
                 )
+                ir.async_delete_issue(self.hass, DOMAIN, f"{ISSUE_UNOWNED_RUN}_{subentry_id}")
                 continue
             self.foreign_log[subentry_id] = competing.prune(
                 self.foreign_log[subentry_id], dt_util.utcnow()
@@ -763,6 +831,7 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
             if cfg.draw_kw:
                 plan.est_cost = sum(p.minutes / 60.0 * cfg.draw_kw * p.avg_cost for p in periods)
             plan.rationale = rat
+            self._update_unowned_run_issue(subentry_id, cfg, plan, now_utc)
             plans[subentry_id] = plan
         return plans
 
