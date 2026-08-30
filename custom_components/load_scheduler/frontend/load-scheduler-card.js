@@ -33,6 +33,10 @@ const POWER_SVG =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" ' +
   'stroke-linecap="round" aria-hidden="true"><path d="M12 3.5v8"/>' +
   '<path d="M7 6.6a7 7 0 1 0 10 0"/></svg>';
+// Inline bolt glyph for the boost pill (same no-icon-font reasoning).
+const BOLT_SVG =
+  '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
+  '<path d="M13 2 4.5 13.2H11l-1 8.8 8.5-11.2H12z"/></svg>';
 const MODE_LABEL = {
   non_sequential: "cheapest",
   sequential: "block",
@@ -120,6 +124,17 @@ function loadControls(hass, scheduleEntityId) {
     else if (dom === "number") out.target = e.entity_id;
   }
   return out;
+}
+
+// Minutes left on an active boost, read from the schedule sensor's
+// `boost_until` (a local ISO timestamp). 0 when there is no boost or it has
+// already lapsed — the coordinator clears the attribute on its next tick, so
+// don't trust a stale one.
+function boostRemaining(attrs) {
+  const until = attrs && attrs.boost_until;
+  if (!until) return 0;
+  const ms = new Date(until) - Date.now();
+  return ms > 0 ? ms / 60000 : 0;
 }
 
 function define(name, cls) {
@@ -216,6 +231,26 @@ const CARD_CSS = `
   .detail .prow { font-size: 0.78em; line-height: 1.5; }
   .detail .prow.tot { color: var(--secondary-text-color); margin-top: 3px; }
   .detail .prow.muted { color: var(--secondary-text-color); }
+  /* The schedule list and the boost control share a row so the panel gains no
+     height; flex-wrap (not a viewport media query — the card's width is set by
+     its dashboard column, not the window) drops the control below when narrow. */
+  .detail-cols { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px 10px; }
+  /* The floor stops the schedule rows being squeezed into two lines each; once
+     the control no longer fits beside them it wraps to its own row instead. */
+  .detail-main { flex: 1 1 55%; min-width: min(100%, 210px); }
+  .detail-side { flex: 0 0 auto; margin-left: auto; display: flex; flex-direction: column;
+          align-items: flex-end; gap: 2px; }
+  .bbtn { display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+          border: 1px solid var(--divider-color, rgba(127,127,127,0.4));
+          background: var(--card-background-color); color: var(--primary-text-color);
+          border-radius: 13px; padding: 3px 11px; font-size: 0.78em; font-weight: 500;
+          user-select: none; white-space: nowrap; }
+  .bbtn:hover { background: var(--secondary-background-color); }
+  .bbtn svg { width: 12px; height: 12px; flex: 0 0 auto; }
+  /* Boosting reuses the heating orange, so the pill matches the timeline. */
+  .bbtn.active { background: #ff9800; border-color: #ff9800; color: #fff; }
+  .bcap { font-size: 0.66em; color: var(--secondary-text-color); white-space: nowrap;
+          padding-right: 2px; }
   /* 24h activity timeline (history-graph style), colours matching the statuses. */
   .tlwrap { margin-top: 7px; position: relative; }
   .tl { display: flex; height: 14px; border-radius: 7px; overflow: hidden;
@@ -458,11 +493,11 @@ class LoadSchedulerCard extends HTMLElement {
     // Clicking the title opens the controlled switch's more-info (or the
     // schedule sensor itself for informational loads with nothing to control).
     const moreEntity = c.controlled_entity || this._selected;
-    let inner = "";
+    let main = "";
     if (isScheduler) {
       const sym = currencySymbol(this._hass);
       const ps = a.periods || [];
-      inner += ps.length
+      main += ps.length
         ? ps
             .map((p) => {
               const mins = (new Date(p.end) - new Date(p.start)) / 60000;
@@ -475,16 +510,54 @@ class LoadSchedulerCard extends HTMLElement {
       const tot = [];
       if (a.scheduled_minutes) tot.push(`${fmtDuration(a.scheduled_minutes)} total`);
       if (a.est_cost) tot.push(`est ${sym}${a.est_cost.toFixed(2)}`);
-      if (tot.length) inner += `<div class="prow tot">${tot.join(" · ")}</div>`;
+      if (tot.length) main += `<div class="prow tot">${tot.join(" · ")}</div>`;
     }
-    inner += this._timelineHtml();
+    // The boost control fills the empty space beside the schedule list rather
+    // than adding a row, so the panel keeps its height.
+    const side = this._boostHtml(item, a);
+    const cols = side
+      ? `<div class="detail-cols"><div class="detail-main">${main}</div>${side}</div>`
+      : main;
     return `<ha-card class="detail"><div class="detail-body">
       <div class="detail-head">
         <span class="detail-name" data-action="more-info" data-entity="${moreEntity}">${name} — ${
           isScheduler ? "schedule" : "activity"
         }</span>
         <span class="close" data-close="1">✕</span>
-      </div>${inner}</div></ha-card>`;
+      </div>${cols}${this._timelineHtml()}</div></ha-card>`;
+  }
+
+  // How long a boost from this card should run: the per-entity override, else
+  // the card-wide default, else what the integration itself would pick (the
+  // load's target runtime, or DEFAULT_BOOST_MINUTES when that is zero). The
+  // last case is left unset in the service call so the backend keeps deciding;
+  // `effective` exists only so the caption can show a concrete number.
+  _boostMinutes(item, a) {
+    const pick = (v) => {
+      const n = parseFloat(v);
+      return n > 0 ? n : null;
+    };
+    const configured = pick(item && item.boost_minutes) || pick(this._config.boost_minutes);
+    const target = parseFloat(a.target_minutes);
+    return { configured, effective: configured || (target > 0 ? target : 60) };
+  }
+
+  // The combined boost status + action pill, with the duration underneath it.
+  _boostHtml(item, a) {
+    const ctl = loadControls(this._hass, this._selected);
+    if (!ctl.boost) return ""; // informational load: nothing to boost
+    const left = boostRemaining(a);
+    const { configured, effective } = this._boostMinutes(item, a);
+    const label = left ? `${fmtDuration(left)} left` : "Boost";
+    const cap = left ? `until ${fmtClock(a.boost_until)}` : fmtDuration(effective);
+    return `<div class="detail-side">
+      <span class="bbtn${left ? " active" : ""}" data-action="boost"
+        data-entity="${this._selected}" data-cancel="${ctl.boost}"
+        data-minutes="${configured || ""}" data-on="${left ? "true" : "false"}"
+        title="${left ? "Cancel the boost" : `Run now for ${fmtDuration(effective)}`}"
+        >${BOLT_SVG}${label}</span>
+      <span class="bcap">${cap}</span>
+    </div>`;
   }
 
   _historyHours() {
@@ -639,6 +712,18 @@ class LoadSchedulerCard extends HTMLElement {
     return segs;
   }
 
+  // (Re)start the auto-collapse countdown. Also called from the panel's own
+  // controls, so interacting with one doesn't leave the user a second away
+  // from the panel vanishing under them.
+  _armCollapse() {
+    if (this._timer) clearTimeout(this._timer);
+    this._timer = setTimeout(() => {
+      this._selected = null;
+      this._timer = null;
+      this._render();
+    }, 60000);
+  }
+
   // Only (re)arm the auto-collapse timer when the selection actually changes —
   // `_render` runs on every (frequent) hass update and must not reset it.
   _select(id) {
@@ -651,11 +736,7 @@ class LoadSchedulerCard extends HTMLElement {
     }
     if (id) {
       this._loadHistory(id); // async; re-renders the timeline when ready
-      this._timer = setTimeout(() => {
-        this._selected = null;
-        this._timer = null;
-        this._render();
-      }, 60000);
+      this._armCollapse();
     }
     this._render();
   }
@@ -686,6 +767,25 @@ class LoadSchedulerCard extends HTMLElement {
               composed: true,
             }),
           );
+        }
+        return;
+      }
+      if (action.dataset.action === "boost") {
+        this._armCollapse();
+        if (this._hass && entity) {
+          if (action.dataset.on === "true") {
+            // Only the button cancels: it also flags the manual stop so the
+            // plan/divert don't re-grab the load. The service has no cancel.
+            this._hass.callService("button", "press", { entity_id: action.dataset.cancel });
+          } else {
+            // The service resolves entity → device → load, so the schedule
+            // sensor is a valid target. No `minutes` = the backend's own
+            // default (the load's target runtime).
+            const mins = parseFloat(action.dataset.minutes);
+            const data = { entity_id: entity };
+            if (mins > 0) data.minutes = mins;
+            this._hass.callService("load_scheduler", "boost", data);
+          }
         }
         return;
       }
@@ -773,6 +873,7 @@ class LoadSchedulerCard extends HTMLElement {
           a.delivered_minutes,
           a.scheduled_minutes,
           a.est_cost,
+          a.boost_until,
           c.controlled_entity,
           c.mode,
           periods.map((p) => `${p.start}-${p.end}`).join(","),
@@ -1141,11 +1242,14 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
     const ctl = loadControls(this._hass, entityId);
     const parts = [];
     if (ctl.boost) {
-      const on = !!a.boost_until;
+      const left = boostRemaining(a);
+      const mins = parseFloat(this._opt("boost_minutes", 0));
       parts.push(
-        `<span class="btn${on ? " active" : ""}" data-action="boost" data-entity="${ctl.boost}">${
-          on ? "Boosting" : "Boost"
-        }</span>`,
+        `<span class="btn${left ? " active" : ""}" data-action="boost" data-entity="${
+          entityId
+        }" data-cancel="${ctl.boost}" data-minutes="${mins > 0 ? mins : ""}" data-on="${
+          left ? "true" : "false"
+        }">${left ? `Boosting · ${fmtDuration(left)} left` : "Boost"}</span>`,
       );
     }
     if (ctl.enabled) {
@@ -1220,7 +1324,15 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
     const entity = el.dataset.entity;
     if (!this._hass || !entity) return;
     if (action === "boost") {
-      this._hass.callService("button", "press", { entity_id: entity });
+      if (el.dataset.on === "true") {
+        // Cancelling goes through the button: it also flags the manual stop.
+        this._hass.callService("button", "press", { entity_id: el.dataset.cancel });
+      } else {
+        const mins = parseFloat(el.dataset.minutes);
+        const data = { entity_id: entity };
+        if (mins > 0) data.minutes = mins;
+        this._hass.callService("load_scheduler", "boost", data);
+      }
     } else if (action === "enable") {
       const turnOn = el.dataset.on !== "true";
       this._hass.callService("switch", turnOn ? "turn_on" : "turn_off", { entity_id: entity });
@@ -1357,7 +1469,12 @@ class LoadSchedulerCardEditor extends HTMLElement {
     this._working = raw.map((e) =>
       typeof e === "string"
         ? { entity: e }
-        : { entity: e.entity, name: e.name, tank_charge: e.tank_charge },
+        : {
+            entity: e.entity,
+            name: e.name,
+            tank_charge: e.tank_charge,
+            boost_minutes: e.boost_minutes,
+          },
     );
   }
 
@@ -1367,10 +1484,12 @@ class LoadSchedulerCardEditor extends HTMLElement {
       .map((e) => {
         const name = e.name && String(e.name).trim() ? String(e.name).trim() : null;
         const tank = e.tank_charge && String(e.tank_charge).trim() ? String(e.tank_charge).trim() : null;
-        if (!name && !tank) return e.entity;
+        const boost = parseFloat(e.boost_minutes) > 0 ? parseFloat(e.boost_minutes) : null;
+        if (!name && !tank && !boost) return e.entity;
         const obj = { entity: e.entity };
         if (name) obj.name = name;
         if (tank) obj.tank_charge = tank;
+        if (boost) obj.boost_minutes = boost;
         return obj;
       });
     const next = { ...this._config };
@@ -1457,6 +1576,21 @@ class LoadSchedulerCardEditor extends HTMLElement {
     this._tankPickers.push(tank);
     row.appendChild(tank);
 
+    const boost = document.createElement("ha-textfield");
+    boost.label = "Boost min";
+    boost.type = "number";
+    boost.value = item.boost_minutes != null ? String(item.boost_minutes) : "";
+    boost.placeholder =
+      this._config.boost_minutes != null ? String(this._config.boost_minutes) : "auto";
+    boost.style.cssText = "flex:0 1 7em;min-width:5em;";
+    boost.addEventListener("change", () => {
+      const v = parseFloat(boost.value);
+      if (v > 0) this._working[i].boost_minutes = v;
+      else delete this._working[i].boost_minutes;
+      this._emit(); // no rebuild → the field keeps focus/value
+    });
+    row.appendChild(boost);
+
     row.appendChild(
       this._miniButton("✕", "Remove", false, () => {
         this._working.splice(i, 1);
@@ -1518,10 +1652,36 @@ class LoadSchedulerCardEditor extends HTMLElement {
     });
     wrap.appendChild(hours);
 
+    const boostDefault = document.createElement("ha-textfield");
+    boostDefault.label = "Boost minutes (default for all loads)";
+    boostDefault.type = "number";
+    boostDefault.value =
+      this._config.boost_minutes != null ? String(this._config.boost_minutes) : "";
+    boostDefault.placeholder = "the load's target runtime";
+    boostDefault.style.width = "100%";
+    boostDefault.addEventListener("change", () => {
+      const v = parseFloat(boostDefault.value);
+      const next = { ...this._config };
+      if (v > 0) next.boost_minutes = v;
+      else delete next.boost_minutes;
+      this._config = next;
+      this._lastEmitted = JSON.stringify(next);
+      this.dispatchEvent(
+        new CustomEvent("config-changed", {
+          detail: { config: next },
+          bubbles: true,
+          composed: true,
+        }),
+      );
+      this._build(); // the per-entity placeholders mirror this value
+    });
+    wrap.appendChild(boostDefault);
+
     this._tankPickers = [];
     const hint = document.createElement("div");
     hint.textContent =
-      "Entities — reorder with the arrows, set an optional display name and tank-charge sensor:";
+      "Entities — reorder with the arrows, set an optional display name, tank-charge " +
+      "sensor and boost duration:";
     hint.style.cssText = "font-size:0.82em;color:var(--secondary-text-color);";
     wrap.appendChild(hint);
 
@@ -1571,6 +1731,12 @@ class LoadSchedulerDiagnosticCardEditor extends LoadSchedulerCardEditorBase {
       { name: "show_config", selector: { boolean: {} } },
       { name: "show_costs", selector: { boolean: {} } },
       { name: "show_controls", selector: { boolean: {} } },
+      {
+        name: "boost_minutes",
+        selector: {
+          number: { min: 5, max: 1440, step: 5, mode: "box", unit_of_measurement: "min" },
+        },
+      },
     ];
   }
   _labels() {
@@ -1583,6 +1749,7 @@ class LoadSchedulerDiagnosticCardEditor extends LoadSchedulerCardEditorBase {
       show_config: "Show configuration",
       show_costs: "Show schedule & cost",
       show_controls: "Show controls",
+      boost_minutes: "Boost duration (blank = the load's target runtime)",
     };
   }
 }

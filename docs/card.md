@@ -35,6 +35,23 @@ price and source). Inside that expanded detail panel, clicking the **title**
 opens the more-info dialog of the load's controlled switch — or, for
 informational loads with no controlled entity, the schedule sensor itself.
 
+Beside the period list — in the space it leaves free, so the panel gains no
+height — sits the load's **boost pill**, with the duration printed small
+underneath it:
+
+- **⚡ Boost** (outlined) — tap to run the load now for that duration,
+  overriding both the price plan and the enable switch. The caption shows how
+  long that will be.
+- **⚡ 42m left** (orange, matching the "heating" colour elsewhere) — a boost is
+  running; the caption shows when it ends, and tapping cancels it (the same
+  explicit stop as the load's own Boost button, so the plan and solar divert
+  don't immediately re-grab the load).
+
+The duration comes from `boost_minutes` — per entity, falling back to the
+card-wide value, falling back to what the integration itself would pick (the
+load's target runtime, or 60 minutes when that is zero). Loads with nothing to
+control (informational) get no pill.
+
 If an entity sets `tank_charge` (below), a thin progress bar appears under the
 tile's title:
 
@@ -55,16 +72,19 @@ Add a Manual card (or the card picker → "Load Scheduler Card"):
 ```yaml
 type: custom:load-scheduler-card
 title: Loads          # optional
+boost_minutes: 60     # optional, default duration of the card's boost pill
 entities:
   - entity: sensor.water_heater_schedule
     name: Water heater              # optional, overrides the friendly name
     tank_charge: sensor.lvv_water_heater_tank_charge   # optional
+    boost_minutes: 90               # optional, overrides the card-wide value
   - sensor.dishwasher_schedule
 ```
 
 `entities` are the per-load **`…_schedule`** sensors (one per load device),
 either as plain entity IDs or as objects with `entity` (required), `name`
-(optional display override), and `tank_charge` (optional). `tank_charge`
+(optional display override), `tank_charge` (optional) and `boost_minutes`
+(optional). `tank_charge`
 points at an external 0–100 percentage sensor — e.g.
 `sensor.lvv_water_heater_tank_charge` from the load-need-predictor
 integration — and enables the tank-charge progress bar described above. Omit
@@ -88,9 +108,10 @@ the way it does — useful for tuning a load or debugging. Each panel shows:
   delivered).
 - **Schedule** — each upcoming period with its clock times, duration, source
   (☀ / ⚡), and per-period €/kWh, plus the total and a rough run cost.
-- **Controls** (optional) — inline **Boost** (run now, toggles off again),
-  **Enable/disable**, and a **target** stepper, reusing the load's own
-  button/switch/number entities.
+- **Controls** (optional) — inline **Boost** (run now for `boost_minutes`, or
+  the load's target runtime when unset; while boosting it shows the time left
+  and tapping cancels), **Enable/disable**, and a **target** stepper, reusing
+  the load's own button/switch/number entities.
 
 ```yaml
 type: custom:load-scheduler-diagnostic-card
@@ -103,6 +124,7 @@ show_targets: true           # each section can be toggled off
 show_config: true
 show_costs: true
 show_controls: true
+boost_minutes: 60            # optional; blank = the load's target runtime
 ```
 
 The currency symbol follows your Home Assistant configuration. Costs are derived
@@ -113,7 +135,8 @@ from the per-period effective price; the run-cost estimate needs the load's
 
 Both cards have a visual editor: when you add one from the card picker (or click
 **Edit** on it), you get a form to set the title, pick the schedule sensors
-(filtered to this integration), and — for the diagnostic card — toggle the
+(filtered to this integration), set the boost duration (card-wide, and
+per entity on the compact card), and — for the diagnostic card — toggle the
 sections and compact mode. YAML still works exactly as above.
 
 ## Sizing
