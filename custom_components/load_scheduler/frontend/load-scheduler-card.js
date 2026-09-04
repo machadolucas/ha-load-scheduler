@@ -1403,15 +1403,26 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
 // this editor while the <ha-entity-picker> next to them rendered fine. <ha-form>
 // is pulled in by the card-editor dialog itself, so it is always there.
 
+// Wrapping a whole schema in one grid is also the compact-layout trick: <ha-form>
+// puts 24px between *top-level* rows, while a grid's own gap is 8px — so a
+// single grid both aligns the fields and closes the dead space between them.
+const BOOST_SELECTOR = {
+  number: { min: 5, max: 1440, step: 5, mode: "box", unit_of_measurement: "min" },
+};
+
 const COMPACT_SCHEMA = [
-  { name: "title", selector: { text: {} } },
   {
-    name: "history_hours",
-    selector: { number: { min: 1, max: 168, step: 1, mode: "box", unit_of_measurement: "h" } },
-  },
-  {
-    name: "boost_minutes",
-    selector: { number: { min: 5, max: 1440, step: 5, mode: "box", unit_of_measurement: "min" } },
+    name: "",
+    type: "grid",
+    column_min_width: "220px",
+    schema: [
+      { name: "title", selector: { text: {} } },
+      {
+        name: "history_hours",
+        selector: { number: { min: 1, max: 168, step: 1, mode: "box", unit_of_measurement: "h" } },
+      },
+      { name: "boost_minutes", selector: BOOST_SELECTOR },
+    ],
   },
 ];
 
@@ -1422,16 +1433,11 @@ const COMPACT_ROW_SCHEMA = [
   {
     name: "",
     type: "grid",
-    column_min_width: "140px",
+    column_min_width: "200px",
     schema: [
       { name: "name", selector: { text: {} } },
       { name: "tank_charge", selector: { entity: { filter: { domain: "sensor" } } } },
-      {
-        name: "boost_minutes",
-        selector: {
-          number: { min: 5, max: 1440, step: 5, mode: "box", unit_of_measurement: "min" },
-        },
-      },
+      { name: "boost_minutes", selector: BOOST_SELECTOR },
     ],
   },
 ];
@@ -1517,14 +1523,16 @@ class LoadSchedulerCardEditorBase extends HTMLElement {
   _labels() {
     return {};
   }
+  // Helper text under the card-wide fields only: there they sit in one even row,
+  // whereas under the entity rows they just repeat the header above them.
+  _helpers() {
+    return {};
+  }
   _rowSchema() {
     return null; // null → this card has no per-entity list
   }
   _rowLabels() {
     return {};
-  }
-  _rowHelper() {
-    return "";
   }
   _rowKeys() {
     return [];
@@ -1661,21 +1669,23 @@ class LoadSchedulerCardEditorBase extends HTMLElement {
 
     const box = document.createElement("div");
     box.style.cssText =
-      "border:1px solid var(--divider-color);border-radius:8px;padding:6px 8px;" +
-      "display:flex;flex-direction:column;gap:4px;";
+      "border:1px solid var(--divider-color);border-radius:10px;padding:8px 12px 12px;" +
+      "display:flex;flex-direction:column;gap:2px;";
 
+    // Name/id first, buttons trailing: that keeps the header text flush-left
+    // with the fields below it rather than indented past the arrows.
     const head = document.createElement("div");
-    head.style.cssText = "display:flex;align-items:center;gap:6px;";
+    head.style.cssText = "display:flex;align-items:center;gap:4px;";
+    const info = document.createElement("div");
+    info.style.cssText = "flex:1 1 auto;min-width:0;overflow:hidden;";
+    info.innerHTML =
+      `<div style="font-size:0.9em;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${friendly}</div>` +
+      `<div style="font-size:0.72em;color:var(--secondary-text-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${item.entity}</div>`;
+    head.appendChild(info);
     head.appendChild(this._miniButton("↑", "Move up", i === 0, () => this._move(i, -1)));
     head.appendChild(
       this._miniButton("↓", "Move down", i === this._working.length - 1, () => this._move(i, 1)),
     );
-    const info = document.createElement("div");
-    info.style.cssText = "flex:1 1 auto;min-width:0;overflow:hidden;";
-    info.innerHTML =
-      `<div style="font-size:0.86em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${friendly}</div>` +
-      `<div style="font-size:0.72em;color:var(--secondary-text-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${item.entity}</div>`;
-    head.appendChild(info);
     head.appendChild(
       this._miniButton("✕", "Remove", false, () => {
         this._working.splice(i, 1);
@@ -1697,7 +1707,6 @@ class LoadSchedulerCardEditorBase extends HTMLElement {
           form.data = this._rowData(this._working[i]);
         },
         (s) => this._rowLabels()[s.name] || s.name,
-        (s) => this._rowHelper(item, s, friendly),
       ),
     );
     return box;
@@ -1718,7 +1727,7 @@ class LoadSchedulerCardEditorBase extends HTMLElement {
     this._built = true;
 
     const wrap = document.createElement("div");
-    wrap.style.cssText = "display:flex;flex-direction:column;gap:10px;padding:4px 0;";
+    wrap.style.cssText = "display:flex;flex-direction:column;gap:8px;padding:4px 0;";
 
     const schema = this._schema();
     if (schema.length) {
@@ -1727,6 +1736,7 @@ class LoadSchedulerCardEditorBase extends HTMLElement {
         this._config,
         (v) => this._emit(v),
         (s) => this._labels()[s.name] || s.name,
+        (s) => this._helpers()[s.name] || "",
       );
       wrap.appendChild(this._topForm);
     }
@@ -1734,7 +1744,8 @@ class LoadSchedulerCardEditorBase extends HTMLElement {
     if (this._rowSchema()) {
       const hint = document.createElement("div");
       hint.textContent = this._hint();
-      hint.style.cssText = "font-size:0.82em;color:var(--secondary-text-color);";
+      hint.style.cssText =
+        "font-size:0.82em;line-height:1.35;color:var(--secondary-text-color);margin-top:4px;";
       wrap.appendChild(hint);
 
       this._working.forEach((item, i) => wrap.appendChild(this._rowEl(item, i)));
@@ -1764,10 +1775,13 @@ class LoadSchedulerCardEditor extends LoadSchedulerCardEditorBase {
     return COMPACT_SCHEMA;
   }
   _labels() {
+    return { title: "Title", history_hours: "Timeline hours", boost_minutes: "Default boost" };
+  }
+  _helpers() {
     return {
-      title: "Title (optional)",
-      history_hours: "Activity timeline hours",
-      boost_minutes: "Boost duration (default for all loads)",
+      title: "optional, shown above the tiles",
+      history_hours: "activity timeline span (default 24)",
+      boost_minutes: "blank = the load's target runtime",
     };
   }
   _rowSchema() {
@@ -1776,18 +1790,16 @@ class LoadSchedulerCardEditor extends LoadSchedulerCardEditorBase {
   _rowLabels() {
     return { name: "Name", tank_charge: "Tank charge sensor", boost_minutes: "Boost" };
   }
-  _rowHelper(item, schema, friendly) {
-    if (schema.name === "name") return friendly;
-    if (schema.name === "boost_minutes") return "card default";
-    return "";
-  }
   _rowKeys() {
     return ["name", "tank_charge", "boost_minutes"];
   }
   _hint() {
+    // One line of guidance beats a helper under every field: those repeated the
+    // header immediately above them and left each row with a ragged edge.
     return (
-      "Entities — reorder with the arrows, set an optional display name, " +
-      "tank-charge sensor and boost duration:"
+      "Entities — reorder with the arrows. Name, tank-charge sensor and boost " +
+      "are all optional, and fall back to the entity's own name and the default " +
+      "boost above."
     );
   }
 }
@@ -1808,33 +1820,51 @@ class LoadSchedulerDiagnosticCardEditor extends LoadSchedulerCardEditorBase {
   }
 
   _schema() {
+    // Two grids: the card-wide pair, then the six section toggles as a block —
+    // stacked one-per-row they made the form several screens tall.
     return [
-      { name: "title", selector: { text: {} } },
-      { name: "compact", selector: { boolean: {} } },
-      { name: "show_rationale", selector: { boolean: {} } },
-      { name: "show_targets", selector: { boolean: {} } },
-      { name: "show_config", selector: { boolean: {} } },
-      { name: "show_costs", selector: { boolean: {} } },
-      { name: "show_controls", selector: { boolean: {} } },
       {
-        name: "boost_minutes",
-        selector: {
-          number: { min: 5, max: 1440, step: 5, mode: "box", unit_of_measurement: "min" },
-        },
+        name: "",
+        type: "grid",
+        column_min_width: "220px",
+        schema: [
+          { name: "title", selector: { text: {} } },
+          { name: "boost_minutes", selector: BOOST_SELECTOR },
+        ],
+      },
+      {
+        name: "",
+        type: "grid",
+        column_min_width: "210px",
+        schema: [
+          { name: "compact", selector: { boolean: {} } },
+          { name: "show_rationale", selector: { boolean: {} } },
+          { name: "show_targets", selector: { boolean: {} } },
+          { name: "show_config", selector: { boolean: {} } },
+          { name: "show_costs", selector: { boolean: {} } },
+          { name: "show_controls", selector: { boolean: {} } },
+        ],
       },
     ];
   }
 
   _labels() {
     return {
-      title: "Title (optional)",
-      compact: "Compact (collapse to rows)",
-      show_rationale: "Show plain-English rationale",
-      show_targets: "Show targets math",
-      show_config: "Show configuration",
-      show_costs: "Show schedule & cost",
-      show_controls: "Show controls",
-      boost_minutes: "Boost duration (blank = the load's target runtime)",
+      title: "Title",
+      compact: "Compact rows",
+      show_rationale: "Rationale",
+      show_targets: "Targets math",
+      show_config: "Configuration",
+      show_costs: "Schedule & cost",
+      show_controls: "Controls",
+      boost_minutes: "Default boost",
+    };
+  }
+
+  _helpers() {
+    return {
+      title: "optional, shown above the panels",
+      boost_minutes: "blank = the load's target runtime",
     };
   }
 
@@ -1844,9 +1874,6 @@ class LoadSchedulerDiagnosticCardEditor extends LoadSchedulerCardEditorBase {
   _rowLabels() {
     return { name: "Name" };
   }
-  _rowHelper(item, schema, friendly) {
-    return schema.name === "name" ? friendly : "";
-  }
   _rowKeys() {
     return ["name"];
   }
@@ -1854,7 +1881,7 @@ class LoadSchedulerDiagnosticCardEditor extends LoadSchedulerCardEditorBase {
     return SCHEDULE_ENTITY_SELECTOR;
   }
   _hint() {
-    return "Loads — reorder with the arrows, set an optional display name:";
+    return "Loads — reorder with the arrows; a blank name uses the entity's own.";
   }
 }
 

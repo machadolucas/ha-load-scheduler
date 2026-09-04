@@ -141,6 +141,16 @@ function mountEditor(tagName, config) {
 
 /* ---- checks ---- */
 
+// Field names anywhere in a schema — the layout nests fields inside `grid`
+// wrappers, so a check shouldn't care how they happen to be grouped today.
+function fieldNames(schema) {
+  return schema.flatMap((s) => (s.schema ? fieldNames(s.schema) : [s.name]));
+}
+const hasFields = (form, names) => {
+  const present = fieldNames(form.schema);
+  return names.every((n) => present.includes(n));
+};
+
 let failures = 0;
 const check = (cond, msg) => {
   console.log(`${cond ? "  ok  " : "  FAIL"} ${msg}`);
@@ -161,14 +171,12 @@ console.log("compact card editor");
   const forms = el.forms();
 
   check(forms.length === 5, `renders 5 ha-forms (top + 3 rows + add), got ${forms.length}`);
-  const top = forms[0].schema.map((s) => s.name);
   check(
-    ["title", "history_hours", "boost_minutes"].every((n) => top.includes(n)),
+    hasFields(forms[0], ["title", "history_hours", "boost_minutes"]),
     "top form exposes title, history_hours and boost_minutes",
   );
-  const row = forms[1].schema[0].schema.map((s) => s.name);
   check(
-    ["name", "tank_charge", "boost_minutes"].every((n) => row.includes(n)),
+    hasFields(forms[1], ["name", "tank_charge", "boost_minutes"]),
     "each row exposes name, tank_charge and boost_minutes",
   );
 
@@ -212,8 +220,12 @@ console.log("diagnostic card editor");
 
   check(forms.length === 4, `renders 4 ha-forms (top + 2 rows + add), got ${forms.length}`);
   check(
-    !forms[0].schema.some((s) => s.name === "entities"),
+    !fieldNames(forms[0].schema).includes("entities"),
     "entities is off the top form (the rows replace it)",
+  );
+  check(
+    hasFields(forms[0], ["title", "boost_minutes", "compact", "show_rationale", "show_costs"]),
+    "top form still exposes every card-wide option after the regrouping",
   );
   check(
     forms[0].data.compact === true && forms[0].data.show_costs === true,

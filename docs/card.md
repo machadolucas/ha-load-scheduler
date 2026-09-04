@@ -141,10 +141,10 @@ from the per-period effective price; the run-cost estimate needs the load's
 
 **Every** option above is settable from the visual editor — you never need the
 YAML tab. Add a card from the picker (or click **Edit** on one) and you get a
-form for the card-wide options, then one row per entity: reorder with the
-arrows, remove with ✕, add with the picker at the bottom, and set that entity's
-display name (plus, on the compact card, its tank-charge sensor and boost
-duration). YAML still works exactly as above, and an entity with no per-entity
+form for the card-wide options — laid out in a grid so it stays a couple of rows
+rather than one tall column — then one card per entity: reorder with the arrows,
+remove with ✕, add with the picker at the bottom, and set that entity's display
+name (plus, on the compact card, its tank-charge sensor and boost duration). YAML still works exactly as above, and an entity with no per-entity
 overrides stays a plain entity ID when the editor writes the config back.
 
 Everything the editor renders goes through Home Assistant's `ha-form`
