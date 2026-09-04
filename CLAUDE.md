@@ -111,6 +111,12 @@ uv pip install --python .venv313/bin/python -r requirements_test.txt ruff
 - The pure tests (`test_engine`/`price_source`/`windows`/`baseline`) load their
   module via `importlib`, so they run with only `pytest`. **Keep those modules
   HA-free.** The `tests/ha/` tests use `pytest-homeassistant-custom-component`.
+- The card bundle has no build step and no JS runner, so its editor checks are a
+  Node script (`tests/frontend/card_editor_test.mjs`) driving a stub DOM;
+  `tests/test_frontend_card.py` runs it under `pytest` and skips without Node.
+  Add a check there for anything the *editor* must keep doing — the class of bug
+  it exists for (an `<ha-textfield>` that renders as an invisible zero-size box)
+  is invisible to the Python suite.
 - Prefer `ha_reload`-friendly changes; after editing run the full suite.
 
 ## Releasing a version
