@@ -1199,9 +1199,14 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
     return v === undefined ? dflt : v;
   }
 
+  // Normalised, ordered list of {entity, name?} — same contract as the compact
+  // card, so a config written for one card opens in the other.
   _entities() {
     const list = Array.isArray(this._config.entities) ? this._config.entities : null;
-    return list && list.length ? list : discoverScheduleEntities(this._hass);
+    const raw = list && list.length ? list : discoverScheduleEntities(this._hass);
+    return raw
+      .map((e) => (typeof e === "string" ? { entity: e } : e))
+      .filter((e) => e && e.entity);
   }
 
   getCardSize() {
@@ -1275,14 +1280,16 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
     return parts.length ? `<div class="controls">${parts.join("")}</div>` : "";
   }
 
-  _panel(entityId, sym, first) {
+  _panel(item, sym, first) {
+    const entityId = item.entity;
     const st = this._hass.states[entityId];
     if (!st) {
-      return `<div class="panel missing${first ? " first" : ""}">${entityId} (unavailable)</div>`;
+      const label = item.name || entityId;
+      return `<div class="panel missing${first ? " first" : ""}">${label} (unavailable)</div>`;
     }
     const a = st.attributes || {};
     const c = a.config || {};
-    const name = (a.friendly_name || entityId).replace(/\s*schedule$/i, "");
+    const name = item.name || (a.friendly_name || entityId).replace(/\s*schedule$/i, "");
     const mode = MODE_LABEL[c.mode] || c.mode || "";
     const compact = this._opt("compact", false);
     const expanded = this._expanded.has(entityId);
@@ -1386,117 +1393,236 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
 }
 
 /* ------------------------------------------------------------------ *
- * UI editors (shared base on top of HA's <ha-form>)
+ * UI editors (everything goes through HA's <ha-form>)
  * ------------------------------------------------------------------ */
 
-// Diagnostic card: only our schedule sensors (it needs the rationale/config).
-const ENTITIES_SELECTOR = {
-  entity: { multiple: true, filter: { integration: "load_scheduler", domain: "sensor" } },
+// Every field below is an <ha-form> selector, never a bare <ha-textfield>: that
+// element is only defined if something else on the page happened to load its
+// chunk, and an *undefined* custom element renders as an inert zero-size box —
+// which is how the title / hours / boost / name fields silently disappeared from
+// this editor while the <ha-entity-picker> next to them rendered fine. <ha-form>
+// is pulled in by the card-editor dialog itself, so it is always there.
+
+const COMPACT_SCHEMA = [
+  { name: "title", selector: { text: {} } },
+  {
+    name: "history_hours",
+    selector: { number: { min: 1, max: 168, step: 1, mode: "box", unit_of_measurement: "h" } },
+  },
+  {
+    name: "boost_minutes",
+    selector: { number: { min: 5, max: 1440, step: 5, mode: "box", unit_of_measurement: "min" } },
+  },
+];
+
+// `name: ""` makes <ha-form> splice the grid's value straight into the row
+// object, so the grid is pure layout and a row stays flat {name, tank_charge,
+// boost_minutes} — exactly what the entities list serialises.
+const COMPACT_ROW_SCHEMA = [
+  {
+    name: "",
+    type: "grid",
+    column_min_width: "140px",
+    schema: [
+      { name: "name", selector: { text: {} } },
+      { name: "tank_charge", selector: { entity: { filter: { domain: "sensor" } } } },
+      {
+        name: "boost_minutes",
+        selector: {
+          number: { min: 5, max: 1440, step: 5, mode: "box", unit_of_measurement: "min" },
+        },
+      },
+    ],
+  },
+];
+
+const DIAG_ROW_SCHEMA = [{ name: "name", selector: { text: {} } }];
+
+// The compact card also tiles plain switches/lights, so its picker stays
+// unfiltered; the diagnostic card needs our rationale attributes, so it filters.
+const ANY_ENTITY_SELECTOR = { entity: {} };
+const SCHEDULE_ENTITY_SELECTOR = {
+  entity: { filter: { integration: "load_scheduler", domain: "sensor" } },
 };
 
+// Belt and braces for the failure above: if <ha-form> somehow still isn't
+// defined when an editor mounts, touching a built-in card's editor loads the
+// chunk that defines it. Memoised and fully guarded — on failure we render anyway.
+let _editorElementsLoaded = null;
+function ensureEditorElements() {
+  if (customElements.get("ha-form")) return Promise.resolve();
+  if (!_editorElementsLoaded) {
+    _editorElementsLoaded = (async () => {
+      const helpers = await window.loadCardHelpers();
+      const card = await helpers.createCardElement({ type: "entities", entities: [] });
+      const cls = card && card.constructor;
+      if (cls && cls.getConfigElement) await cls.getConfigElement();
+    })().catch(() => {});
+  }
+  return _editorElementsLoaded;
+}
+
+// Shared editor: a top-level <ha-form> plus (optionally) an ordered list of
+// entity rows, each its own small <ha-form>. Subclasses only supply schemas.
 class LoadSchedulerCardEditorBase extends HTMLElement {
   setConfig(config) {
-    this._config = { ...config };
-    this._render();
+    this._config = config || {};
+    const json = JSON.stringify(this._config);
+    // The dialog echoes every config we emit back at us, and ha-form's text and
+    // number selectors fire on *every keystroke* — so an echo can arrive a
+    // keystroke stale. Matching only the last emit would miss it and rebuild the
+    // DOM under the cursor, hence a short ring of what we sent.
+    if (this._sent && this._sent.indexOf(json) !== -1) return;
+    if (!this._built) {
+      if (this._hass) this._build();
+      return;
+    }
+    // A genuinely external edit (the YAML tab). Rebuild — but never mid-word.
+    if (this._focusWithin) {
+      this._pendingRebuild = true;
+      return;
+    }
+    this._build();
+  }
+
+  connectedCallback() {
+    if (this._focusBound) return;
+    this._focusBound = true;
+    // focusin/focusout compose out of ha-form's shadow roots, so the host can
+    // tell whether a rebuild would steal the caret.
+    this.addEventListener("focusin", () => {
+      this._focusWithin = true;
+    });
+    this.addEventListener("focusout", () => {
+      this._focusWithin = false;
+      if (this._pendingRebuild) {
+        this._pendingRebuild = false;
+        this._build();
+      }
+    });
   }
 
   set hass(hass) {
     this._hass = hass;
-    this._render();
+    // Only .hass here — .data is owned by _emit, which keeps it in step with
+    // what was typed.
+    (this._forms || []).forEach((f) => (f.hass = hass));
+    if (!this._built && this._config) this._build();
   }
 
-  // Subclasses override these:
+  /* ---- subclass hooks ---- */
   _schema() {
     return [];
   }
   _labels() {
     return {};
   }
-
-  _render() {
-    if (!this._hass || !this._config) return;
-    if (!this._form) {
-      this._form = document.createElement("ha-form");
-      this.appendChild(this._form);
-      this._form.computeLabel = (s) => this._labels()[s.name] || s.name;
-      // Translate <ha-form>'s internal `value-changed` into the editor↔dialog
-      // `config-changed` contract; guard equal values to avoid editor loops.
-      this._form.addEventListener("value-changed", (ev) => {
-        ev.stopPropagation();
-        const next = ev.detail.value;
-        if (JSON.stringify(next) === JSON.stringify(this._config)) return;
-        this._config = next;
-        this.dispatchEvent(
-          new CustomEvent("config-changed", {
-            detail: { config: next },
-            bubbles: true,
-            composed: true,
-          }),
-        );
-      });
-    }
-    this._form.hass = this._hass;
-    this._form.schema = this._schema();
-    this._form.data = this._config;
+  _rowSchema() {
+    return null; // null → this card has no per-entity list
   }
-}
-
-// Custom editor for the compact card: a reorderable list of entities, each with
-// an optional display-name override, plus an "add entity" picker. (ha-form can't
-// express an ordered list of {entity, name} objects, hence the bespoke UI.)
-class LoadSchedulerCardEditor extends HTMLElement {
-  setConfig(config) {
-    this._config = config || {};
-    // Skip the rebuild triggered by our own emit (keeps a name field's focus).
-    if (this._hass && JSON.stringify(this._config) !== this._lastEmitted) {
-      this._build();
-    }
+  _rowLabels() {
+    return {};
+  }
+  _rowHelper() {
+    return "";
+  }
+  _rowKeys() {
+    return [];
+  }
+  _addSelector() {
+    return ANY_ENTITY_SELECTOR;
+  }
+  _hint() {
+    return "";
   }
 
-  set hass(hass) {
-    const first = !this._hass;
-    this._hass = hass;
-    if (this._addPicker) this._addPicker.hass = hass;
-    (this._tankPickers || []).forEach((p) => (p.hass = hass));
-    if (first && this._config) this._build();
+  /* ---- shared implementation ---- */
+
+  _makeForm(schema, data, onChange, computeLabel, computeHelper) {
+    const form = document.createElement("ha-form");
+    form.hass = this._hass;
+    form.schema = schema;
+    form.data = data;
+    if (computeLabel) form.computeLabel = computeLabel;
+    if (computeHelper) form.computeHelper = computeHelper;
+    form.addEventListener("value-changed", (ev) => {
+      ev.stopPropagation();
+      onChange(ev.detail.value, form);
+    });
+    (this._forms = this._forms || []).push(form);
+    return form;
   }
 
-  // Working list of {entity, name}; from config, else the auto-discovered set so
-  // the user can reorder/rename the defaults straight away.
+  // ha-form hands back `undefined` for a cleared field; keep those (and the
+  // empty strings) out of the saved config so an untouched card stays a minimal
+  // YAML block. `false` and `0` are real values and must survive.
+  _clean(obj) {
+    const out = {};
+    Object.keys(obj).forEach((k) => {
+      const v = obj[k];
+      if (v === undefined || v === null || v === "") return;
+      out[k] = v;
+    });
+    return out;
+  }
+
+  // Working list of {entity, ...rowKeys}; from config, else the auto-discovered
+  // set so the user can reorder/rename the defaults straight away.
   _syncWorking() {
     const list = Array.isArray(this._config.entities) ? this._config.entities : null;
     const raw = list && list.length ? list : discoverScheduleEntities(this._hass);
-    this._working = raw.map((e) =>
-      typeof e === "string"
-        ? { entity: e }
-        : {
-            entity: e.entity,
-            name: e.name,
-            tank_charge: e.tank_charge,
-            boost_minutes: e.boost_minutes,
-          },
-    );
-  }
-
-  _emit() {
-    const entities = this._working
+    const keys = this._rowKeys();
+    this._working = raw
+      .map((e) => (typeof e === "string" ? { entity: e } : e))
       .filter((e) => e && e.entity)
       .map((e) => {
-        const name = e.name && String(e.name).trim() ? String(e.name).trim() : null;
-        const tank = e.tank_charge && String(e.tank_charge).trim() ? String(e.tank_charge).trim() : null;
-        const boost = parseFloat(e.boost_minutes) > 0 ? parseFloat(e.boost_minutes) : null;
-        if (!name && !tank && !boost) return e.entity;
-        const obj = { entity: e.entity };
-        if (name) obj.name = name;
-        if (tank) obj.tank_charge = tank;
-        if (boost) obj.boost_minutes = boost;
-        return obj;
+        const item = { entity: e.entity };
+        keys.forEach((k) => {
+          if (e[k] !== undefined) item[k] = e[k];
+        });
+        return item;
       });
-    const next = { ...this._config };
-    if (entities.length) next.entities = entities;
-    else delete next.entities;
+  }
+
+  _serialiseEntities() {
+    return (this._working || []).map((e) => {
+      // An entry with no extras collapses back to a bare entity id, so a
+      // hand-written YAML list survives a trip through the editor unchanged.
+      const obj = { entity: e.entity };
+      this._rowKeys().forEach((k) => {
+        const v = e[k];
+        if (typeof v === "number") {
+          if (v > 0) obj[k] = v;
+        } else if (v != null && String(v).trim()) {
+          obj[k] = String(v).trim();
+        }
+      });
+      return Object.keys(obj).length === 1 ? e.entity : obj;
+    });
+  }
+
+  // The row data a row form displays: only the row keys, never `entity`.
+  _rowData(item) {
+    const data = {};
+    this._rowKeys().forEach((k) => {
+      if (item[k] !== undefined) data[k] = item[k];
+    });
+    return data;
+  }
+
+  _emit(patch) {
+    const next = this._clean({ ...this._config, ...(patch || {}) });
+    if (this._rowSchema()) {
+      const entities = this._serialiseEntities();
+      if (entities.length) next.entities = entities;
+      else delete next.entities;
+    }
     this._config = next;
-    this._lastEmitted = JSON.stringify(next);
+    // Keep the top form's .data in step: <ha-form> is a controlled component, so
+    // a stale .data would revert the *other* fields on the next keystroke.
+    // Re-assigning the value a field already shows doesn't move its caret.
+    if (this._topForm) this._topForm.data = next;
+    this._sent = (this._sent || []).concat(JSON.stringify(next)).slice(-16);
     this.dispatchEvent(
       new CustomEvent("config-changed", {
         detail: { config: next },
@@ -1509,199 +1635,160 @@ class LoadSchedulerCardEditor extends HTMLElement {
   _move(i, delta) {
     const j = i + delta;
     if (j < 0 || j >= this._working.length) return;
-    const a = this._working;
-    [a[i], a[j]] = [a[j], a[i]];
+    const [item] = this._working.splice(i, 1);
+    this._working.splice(j, 0, item);
     this._emit();
     this._build();
   }
 
-  _miniButton(glyph, label, disabled, onClick) {
+  _miniButton(glyph, title, disabled, onClick) {
     const b = document.createElement("button");
-    b.type = "button";
     b.textContent = glyph;
-    b.title = label;
-    b.setAttribute("aria-label", label);
+    b.title = title;
+    b.setAttribute("aria-label", title);
     b.disabled = !!disabled;
     b.style.cssText =
-      "flex:0 0 auto;cursor:pointer;width:30px;height:34px;border-radius:8px;font-size:1em;" +
-      "border:1px solid var(--divider-color, rgba(127,127,127,0.5));" +
-      "background:var(--card-background-color);color:var(--primary-text-color);";
-    if (disabled) b.style.opacity = "0.4";
-    if (!disabled) b.addEventListener("click", onClick);
+      "flex:0 0 auto;width:28px;height:28px;line-height:1;border:none;border-radius:6px;" +
+      "background:var(--secondary-background-color);color:var(--primary-text-color);" +
+      `cursor:${disabled ? "default" : "pointer"};opacity:${disabled ? 0.4 : 1};`;
+    b.addEventListener("click", onClick);
     return b;
   }
 
-  _row(item, i) {
+  _rowEl(item, i) {
     const st = this._hass.states[item.entity];
     const friendly = (st && st.attributes && st.attributes.friendly_name) || item.entity;
-    const row = document.createElement("div");
-    row.style.cssText = "display:flex;align-items:center;gap:6px;";
 
-    row.appendChild(this._miniButton("↑", "Move up", i === 0, () => this._move(i, -1)));
-    row.appendChild(
+    const box = document.createElement("div");
+    box.style.cssText =
+      "border:1px solid var(--divider-color);border-radius:8px;padding:6px 8px;" +
+      "display:flex;flex-direction:column;gap:4px;";
+
+    const head = document.createElement("div");
+    head.style.cssText = "display:flex;align-items:center;gap:6px;";
+    head.appendChild(this._miniButton("↑", "Move up", i === 0, () => this._move(i, -1)));
+    head.appendChild(
       this._miniButton("↓", "Move down", i === this._working.length - 1, () => this._move(i, 1)),
     );
-
     const info = document.createElement("div");
-    info.style.cssText = "flex:1 1 38%;min-width:0;overflow:hidden;";
+    info.style.cssText = "flex:1 1 auto;min-width:0;overflow:hidden;";
     info.innerHTML =
       `<div style="font-size:0.86em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${friendly}</div>` +
       `<div style="font-size:0.72em;color:var(--secondary-text-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${item.entity}</div>`;
-    row.appendChild(info);
-
-    const name = document.createElement("ha-textfield");
-    name.label = "Name";
-    name.value = item.name || "";
-    name.placeholder = friendly;
-    name.style.cssText = "flex:1 1 42%;min-width:0;";
-    name.addEventListener("change", () => {
-      this._working[i].name = name.value;
-      this._emit(); // no rebuild → the field keeps focus/value
-    });
-    row.appendChild(name);
-
-    const tank = document.createElement("ha-entity-picker");
-    tank.hass = this._hass;
-    tank.label = "Tank charge sensor (optional)";
-    tank.value = item.tank_charge || "";
-    tank.includeDomains = ["sensor"];
-    tank.allowCustomEntity = true;
-    tank.style.cssText = "flex:1 1 42%;min-width:0;";
-    tank.addEventListener("value-changed", (ev) => {
-      const v = ev.detail && ev.detail.value;
-      if (v) this._working[i].tank_charge = v;
-      else delete this._working[i].tank_charge;
-      this._emit(); // no rebuild → the field keeps focus/value
-    });
-    this._tankPickers.push(tank);
-    row.appendChild(tank);
-
-    const boost = document.createElement("ha-textfield");
-    boost.label = "Boost min";
-    boost.type = "number";
-    boost.value = item.boost_minutes != null ? String(item.boost_minutes) : "";
-    boost.placeholder =
-      this._config.boost_minutes != null ? String(this._config.boost_minutes) : "auto";
-    boost.style.cssText = "flex:0 1 7em;min-width:5em;";
-    boost.addEventListener("change", () => {
-      const v = parseFloat(boost.value);
-      if (v > 0) this._working[i].boost_minutes = v;
-      else delete this._working[i].boost_minutes;
-      this._emit(); // no rebuild → the field keeps focus/value
-    });
-    row.appendChild(boost);
-
-    row.appendChild(
+    head.appendChild(info);
+    head.appendChild(
       this._miniButton("✕", "Remove", false, () => {
         this._working.splice(i, 1);
         this._emit();
         this._build();
       }),
     );
-    return row;
+    box.appendChild(head);
+
+    box.appendChild(
+      this._makeForm(
+        this._rowSchema(),
+        this._rowData(item),
+        (v, form) => {
+          // Mutate the working row and re-hand it to the form; never rebuild the
+          // DOM here — that is what would drop the caret mid-word.
+          Object.assign(this._working[i], v);
+          this._emit();
+          form.data = this._rowData(this._working[i]);
+        },
+        (s) => this._rowLabels()[s.name] || s.name,
+        (s) => this._rowHelper(item, s, friendly),
+      ),
+    );
+    return box;
   }
 
   _build() {
     if (!this._hass || !this._config) return;
+    if (!customElements.get("ha-form") && !this._elementsTried) {
+      // The editor chunk hasn't loaded yet; build again once it has (one retry,
+      // so a failure degrades to rendering whatever is available).
+      this._elementsTried = true;
+      ensureEditorElements().then(() => this._build());
+      return;
+    }
     this._syncWorking();
     this.innerHTML = "";
+    this._forms = [];
+    this._built = true;
+
     const wrap = document.createElement("div");
     wrap.style.cssText = "display:flex;flex-direction:column;gap:10px;padding:4px 0;";
 
-    const title = document.createElement("ha-textfield");
-    title.label = "Title (optional)";
-    title.value = this._config.title || "";
-    title.style.width = "100%";
-    title.addEventListener("change", () => {
-      const v = title.value.trim();
-      const next = { ...this._config };
-      if (v) next.title = v;
-      else delete next.title;
-      this._config = next;
-      this._lastEmitted = JSON.stringify(next);
-      this.dispatchEvent(
-        new CustomEvent("config-changed", {
-          detail: { config: next },
-          bubbles: true,
-          composed: true,
-        }),
+    const schema = this._schema();
+    if (schema.length) {
+      this._topForm = this._makeForm(
+        schema,
+        this._config,
+        (v) => this._emit(v),
+        (s) => this._labels()[s.name] || s.name,
       );
-    });
-    wrap.appendChild(title);
+      wrap.appendChild(this._topForm);
+    }
 
-    const hours = document.createElement("ha-textfield");
-    hours.label = "Activity timeline hours";
-    hours.type = "number";
-    hours.value = this._config.history_hours != null ? String(this._config.history_hours) : "";
-    hours.placeholder = "24";
-    hours.style.width = "100%";
-    hours.addEventListener("change", () => {
-      const v = parseFloat(hours.value);
-      const next = { ...this._config };
-      if (v > 0) next.history_hours = v;
-      else delete next.history_hours;
-      this._config = next;
-      this._lastEmitted = JSON.stringify(next);
-      this.dispatchEvent(
-        new CustomEvent("config-changed", {
-          detail: { config: next },
-          bubbles: true,
-          composed: true,
-        }),
+    if (this._rowSchema()) {
+      const hint = document.createElement("div");
+      hint.textContent = this._hint();
+      hint.style.cssText = "font-size:0.82em;color:var(--secondary-text-color);";
+      wrap.appendChild(hint);
+
+      this._working.forEach((item, i) => wrap.appendChild(this._rowEl(item, i)));
+
+      wrap.appendChild(
+        this._makeForm(
+          [{ name: "entity", selector: this._addSelector() }],
+          {},
+          (v) => {
+            const id = v && v.entity;
+            if (!id) return;
+            this._working.push({ entity: id });
+            this._emit();
+            this._build(); // structural change — nothing is focused mid-gesture
+          },
+          () => "Add entity",
+        ),
       );
-    });
-    wrap.appendChild(hours);
-
-    const boostDefault = document.createElement("ha-textfield");
-    boostDefault.label = "Boost minutes (default for all loads)";
-    boostDefault.type = "number";
-    boostDefault.value =
-      this._config.boost_minutes != null ? String(this._config.boost_minutes) : "";
-    boostDefault.placeholder = "the load's target runtime";
-    boostDefault.style.width = "100%";
-    boostDefault.addEventListener("change", () => {
-      const v = parseFloat(boostDefault.value);
-      const next = { ...this._config };
-      if (v > 0) next.boost_minutes = v;
-      else delete next.boost_minutes;
-      this._config = next;
-      this._lastEmitted = JSON.stringify(next);
-      this.dispatchEvent(
-        new CustomEvent("config-changed", {
-          detail: { config: next },
-          bubbles: true,
-          composed: true,
-        }),
-      );
-      this._build(); // the per-entity placeholders mirror this value
-    });
-    wrap.appendChild(boostDefault);
-
-    this._tankPickers = [];
-    const hint = document.createElement("div");
-    hint.textContent =
-      "Entities — reorder with the arrows, set an optional display name, tank-charge " +
-      "sensor and boost duration:";
-    hint.style.cssText = "font-size:0.82em;color:var(--secondary-text-color);";
-    wrap.appendChild(hint);
-
-    this._working.forEach((item, i) => wrap.appendChild(this._row(item, i)));
-
-    const add = document.createElement("ha-entity-picker");
-    add.hass = this._hass;
-    add.label = "Add entity";
-    add.allowCustomEntity = false;
-    add.addEventListener("value-changed", (ev) => {
-      const id = ev.detail && ev.detail.value;
-      if (!id) return;
-      this._working.push({ entity: id });
-      this._emit();
-      this._build();
-    });
-    this._addPicker = add;
-    wrap.appendChild(add);
+    }
 
     this.appendChild(wrap);
+  }
+}
+
+class LoadSchedulerCardEditor extends LoadSchedulerCardEditorBase {
+  _schema() {
+    return COMPACT_SCHEMA;
+  }
+  _labels() {
+    return {
+      title: "Title (optional)",
+      history_hours: "Activity timeline hours",
+      boost_minutes: "Boost duration (default for all loads)",
+    };
+  }
+  _rowSchema() {
+    return COMPACT_ROW_SCHEMA;
+  }
+  _rowLabels() {
+    return { name: "Name", tank_charge: "Tank charge sensor", boost_minutes: "Boost" };
+  }
+  _rowHelper(item, schema, friendly) {
+    if (schema.name === "name") return friendly;
+    if (schema.name === "boost_minutes") return "card default";
+    return "";
+  }
+  _rowKeys() {
+    return ["name", "tank_charge", "boost_minutes"];
+  }
+  _hint() {
+    return (
+      "Entities — reorder with the arrows, set an optional display name, " +
+      "tank-charge sensor and boost duration:"
+    );
   }
 }
 
@@ -1709,7 +1796,7 @@ class LoadSchedulerDiagnosticCardEditor extends LoadSchedulerCardEditorBase {
   // Seed the display toggles to their defaults so the form mirrors what the
   // card actually shows (the card defaults every show_* to on, compact to off).
   setConfig(config) {
-    this._config = {
+    super.setConfig({
       compact: false,
       show_rationale: true,
       show_targets: true,
@@ -1717,14 +1804,12 @@ class LoadSchedulerDiagnosticCardEditor extends LoadSchedulerCardEditorBase {
       show_costs: true,
       show_controls: true,
       ...config,
-    };
-    this._render();
+    });
   }
 
   _schema() {
     return [
       { name: "title", selector: { text: {} } },
-      { name: "entities", selector: ENTITIES_SELECTOR },
       { name: "compact", selector: { boolean: {} } },
       { name: "show_rationale", selector: { boolean: {} } },
       { name: "show_targets", selector: { boolean: {} } },
@@ -1739,10 +1824,10 @@ class LoadSchedulerDiagnosticCardEditor extends LoadSchedulerCardEditorBase {
       },
     ];
   }
+
   _labels() {
     return {
       title: "Title (optional)",
-      entities: "Schedule sensors (auto if empty)",
       compact: "Compact (collapse to rows)",
       show_rationale: "Show plain-English rationale",
       show_targets: "Show targets math",
@@ -1751,6 +1836,25 @@ class LoadSchedulerDiagnosticCardEditor extends LoadSchedulerCardEditorBase {
       show_controls: "Show controls",
       boost_minutes: "Boost duration (blank = the load's target runtime)",
     };
+  }
+
+  _rowSchema() {
+    return DIAG_ROW_SCHEMA;
+  }
+  _rowLabels() {
+    return { name: "Name" };
+  }
+  _rowHelper(item, schema, friendly) {
+    return schema.name === "name" ? friendly : "";
+  }
+  _rowKeys() {
+    return ["name"];
+  }
+  _addSelector() {
+    return SCHEDULE_ENTITY_SELECTOR;
+  }
+  _hint() {
+    return "Loads — reorder with the arrows, set an optional display name:";
   }
 }
 

@@ -73,6 +73,7 @@ Add a Manual card (or the card picker → "Load Scheduler Card"):
 type: custom:load-scheduler-card
 title: Loads          # optional
 boost_minutes: 60     # optional, default duration of the card's boost pill
+history_hours: 24     # optional, span of the activity timeline (default 24, max 168)
 entities:
   - entity: sensor.water_heater_schedule
     name: Water heater              # optional, overrides the friendly name
@@ -91,6 +92,9 @@ integration — and enables the tank-charge progress bar described above. Omit
 `entities` and the card shows every Load Scheduler load it can find (without
 a tank-charge bar, since auto-discovery has no way to know which percentage
 sensor belongs to which load).
+
+`history_hours` sets how far back the detail panel's activity timeline looks —
+24 hours by default, clamped to 168 (a week).
 
 ## Diagnostic card (`custom:load-scheduler-diagnostic-card`)
 
@@ -117,9 +121,11 @@ the way it does — useful for tuning a load or debugging. Each panel shows:
 type: custom:load-scheduler-diagnostic-card
 title: Loads — diagnostics   # optional
 entities:                    # optional (auto-discovered if omitted)
-  - sensor.water_heater_schedule
+  - entity: sensor.water_heater_schedule
+    name: Water heater       # optional display override
   - sensor.dishwasher_schedule
 compact: false               # collapse to tap-to-expand rows
+show_rationale: true         # the plain-English paragraph
 show_targets: true           # each section can be toggled off
 show_config: true
 show_costs: true
@@ -133,11 +139,19 @@ from the per-period effective price; the run-cost estimate needs the load's
 
 ## UI configuration
 
-Both cards have a visual editor: when you add one from the card picker (or click
-**Edit** on it), you get a form to set the title, pick the schedule sensors
-(filtered to this integration), set the boost duration (card-wide, and
-per entity on the compact card), and — for the diagnostic card — toggle the
-sections and compact mode. YAML still works exactly as above.
+**Every** option above is settable from the visual editor — you never need the
+YAML tab. Add a card from the picker (or click **Edit** on one) and you get a
+form for the card-wide options, then one row per entity: reorder with the
+arrows, remove with ✕, add with the picker at the bottom, and set that entity's
+display name (plus, on the compact card, its tank-charge sensor and boost
+duration). YAML still works exactly as above, and an entity with no per-entity
+overrides stays a plain entity ID when the editor writes the config back.
+
+Everything the editor renders goes through Home Assistant's `ha-form`
+selectors. That is deliberate: a bare `<ha-textfield>` is only defined if
+something else on the page happened to load its chunk, and an undefined custom
+element renders as an invisible zero-size box — which is how these fields used
+to disappear from the editor (fixed in 0.16.0).
 
 ## Sizing
 
