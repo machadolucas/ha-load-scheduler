@@ -102,6 +102,17 @@ MANUAL_OVERRIDE_GRACE_S = 600  # back off this long after a foreign (manual) cha
 # never confirmed at all, e.g. an offline relay. Generous on purpose: no relay
 # confirms 15 minutes later, but plenty confirm later than a few seconds.
 COMMAND_PENDING_S = 900
+# Minimum spacing between two *identical* commands to the same load while the
+# first is still unconfirmed. Every watched state change reconciles, so without
+# it a relay that is slow (or silently failing) to follow a command gets the same
+# turn_on re-sent — and a run-started event re-fired — on every price/net/temp
+# sample. Short enough that a command lost in transit is retried promptly; an
+# *opposite* command is never held back by it.
+COMMAND_RESEND_S = 60
+# Low-temp safety floor hysteresis (°C): engage below `temp_min`, release only
+# once the room is back to `temp_min + this`. Without it a sensor hovering at the
+# threshold flips the relay on every sample.
+TEMP_FLOOR_HYSTERESIS = 0.5
 # Asymmetric anti-thrash dwell: slow to engage (protects relays), quick to shed
 # (so a mispredicted import doesn't linger). Relay protection comes from the
 # predictive accuracy + hysteresis, not from a long dwell — a shorter dwell would

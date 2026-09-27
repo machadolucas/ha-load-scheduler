@@ -66,3 +66,62 @@ def test_generic_watts_converted_to_kw():
 def test_error_on_unknown_attributes():
     with pytest.raises(ss.SolarFormatError):
         ss.parse_solar({"foo": "bar"})
+
+
+def test_malformed_items_are_skipped_not_fatal():
+    t0 = datetime(2026, 6, 17, 9, 0, tzinfo=UTC)
+    attrs = {
+        "detailedForecast": [
+            {"period_start": t0.isoformat(), "pv_estimate": 4.0},
+            {"period_start": (t0 + timedelta(minutes=30)).isoformat(), "pv_estimate": None},
+            {"period_start": "bogus", "pv_estimate": 1.0},
+            {"pv_estimate": 1.0},
+            {"period_start": (t0 + timedelta(minutes=60)).isoformat(), "pv_estimate": 2.0},
+        ]
+    }
+    periods = ss.parse_solar(attrs)
+    assert [(p.start, p.power_kw) for p in periods] == [
+        (t0, 4.0),
+        (t0 + timedelta(minutes=60), 2.0),
+    ]
+
+
+def test_all_items_unusable_raises_format_error():
+    t0 = datetime(2026, 6, 17, 9, 0, tzinfo=UTC)
+    with pytest.raises(ss.SolarFormatError):
+        ss.parse_solar(
+            {"detailedForecast": [{"period_start": t0.isoformat(), "pv_estimate": None}]}
+        )
+
+
+def test_available_kwh_sweep_matches_brute_force():
+    t0 = datetime(2026, 6, 17, 6, 0, tzinfo=UTC)
+    periods = ss.parse_solar(_solcast([0.5 * i for i in range(24)], t0))
+    slots = [
+        Slot(t0 + timedelta(minutes=15 * i), t0 + timedelta(minutes=15 * (i + 1)), 0.1)
+        for i in range(40)
+    ] + [Slot(t0 + timedelta(hours=10), t0 + timedelta(hours=13), 0.1)]  # hourly-ish tail
+    got = ss.available_kwh_by_slot(periods, slots)
+    for s in slots:
+        want = (
+            sum(
+                p.power_kw * max(0.0, (min(s.end, p.end) - max(s.start, p.start)).total_seconds())
+                for p in periods
+            )
+            / 3600.0
+        )
+        assert got[s.start] == pytest.approx(want)
+
+
+def test_missing_estimate_is_a_gap_not_the_previous_period_stretched():
+    t0 = datetime(2026, 6, 17, 9, 0, tzinfo=UTC)
+    attrs = {
+        "detailedForecast": [
+            {"period_start": t0.isoformat(), "pv_estimate": 4.0},
+            {"period_start": (t0 + timedelta(minutes=30)).isoformat(), "pv_estimate": None},
+            {"period_start": (t0 + timedelta(minutes=60)).isoformat(), "pv_estimate": 2.0},
+        ]
+    }
+    periods = ss.parse_solar(attrs)
+    assert periods[0].end == t0 + timedelta(minutes=30)
+    assert periods[1].start == t0 + timedelta(minutes=60)

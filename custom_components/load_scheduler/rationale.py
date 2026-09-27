@@ -35,6 +35,7 @@ SKIP_ALREADY_SATISFIED = "already_satisfied"  # remaining target/floor is 0
 SKIP_NO_SLOTS = "no_slots_in_window"  # no price slots overlap the window
 SKIP_ALL_ABOVE_CAP = "all_above_cap"  # cheapest-first, nothing at/under the cap
 SKIP_NO_CONTIGUOUS_BLOCK = "no_contiguous_block"  # sequential: no block fits
+SKIP_BELOW_MIN_RUN = "below_min_run"  # what's left is shorter than one legal run
 SKIP_DISABLED = "disabled"  # the enable switch is off
 SKIP_NO_PRICE_DATA = "no_price_data"  # no usable price forecast
 
@@ -125,6 +126,17 @@ def _skip_reason(params: LoadParams, periods: list[Period], candidates: list[Slo
         return SKIP_ALREADY_SATISFIED
     if not candidates:
         return SKIP_NO_SLOTS
+    remaining = max(params.target_minutes, params.min_service_minutes)
+    if (
+        params.mode is ScheduleMode.NON_SEQUENTIAL
+        and params.min_service_minutes <= _EPS
+        and remaining < params.min_run_minutes - _EPS
+    ):
+        # A discretionary remainder below min_run can't be a run of its own (and
+        # there's no run in progress to glue it onto) — not a price problem, so
+        # "all above cap" would send the user chasing the wrong setting. With a
+        # floor outstanding the engine rounds up to a legal run instead.
+        return SKIP_BELOW_MIN_RUN
     if params.mode is ScheduleMode.NON_SEQUENTIAL:
         return SKIP_ALL_ABOVE_CAP
     return SKIP_NO_CONTIGUOUS_BLOCK

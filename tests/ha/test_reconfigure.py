@@ -103,3 +103,116 @@ async def test_subentry_reconfigure_edits_load(hass: HomeAssistant) -> None:
     )
     assert result["type"] is FlowResultType.ABORT
     assert entry.subentries[subentry_id].data["target_minutes"] == 90
+
+
+async def test_hub_reconfigure_clearing_an_optional_source_removes_it(
+    hass: HomeAssistant,
+) -> None:
+    hass.states.async_set("sensor.prices", "ok", _valid_price())
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            "name": "Hub",
+            "buy_price_entity": "sensor.prices",
+            "sell_price_entity": "sensor.sell",
+        },
+        unique_id="sensor.prices",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"name": "Hub", "buy_price_entity": "sensor.prices"}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert "sell_price_entity" not in entry.data
+    assert entry.data["name"] == "Hub"
+
+
+async def test_hub_reconfigure_moves_the_unique_id_with_the_buy_sensor(
+    hass: HomeAssistant,
+) -> None:
+    entry = await _hub(hass)
+    hass.states.async_set("sensor.prices2", "ok", _valid_price())
+    result = await entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"name": "Hub", "buy_price_entity": "sensor.prices2"}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert entry.unique_id == "sensor.prices2"
+
+
+async def test_hub_reconfigure_rejects_another_hubs_buy_sensor(hass: HomeAssistant) -> None:
+    entry = await _hub(hass)
+    MockConfigEntry(
+        domain=DOMAIN,
+        data={"name": "Other", "buy_price_entity": "sensor.other"},
+        unique_id="sensor.other",
+    ).add_to_hass(hass)
+    result = await entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"name": "Hub", "buy_price_entity": "sensor.other"}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"]["base"] == "already_configured"
+    assert entry.unique_id == "sensor.prices"
+
+
+def _load(name: str, **extra) -> dict:
+    return {
+        "name": name,
+        "mode": "non_sequential",
+        "target_minutes": 30,
+        "runs_per_day": 1,
+        **extra,
+    }
+
+
+async def test_subentry_rejects_a_switch_another_load_controls(hass: HomeAssistant) -> None:
+    entry = await _hub(
+        hass,
+        subentries_data=[
+            ConfigSubentryData(
+                subentry_type=SUBENTRY_TYPE_LOAD,
+                title="Heater",
+                unique_id=None,
+                data=_load("Heater", controlled_entity="switch.shared"),
+            )
+        ],
+    )
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_LOAD), context={"source": SOURCE_USER}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], _load("Floor", controlled_entity="switch.shared")
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"]["controlled_entity"] == "controlled_entity_in_use"
+
+    # Reconfiguring the owner itself keeps its own switch.
+    subentry_id = next(iter(entry.subentries))
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry_id)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], _load("Heater", controlled_entity="switch.shared", target_minutes=45)
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert entry.subentries[subentry_id].data["target_minutes"] == 45
+
+
+async def test_subentry_kwh_target_requires_a_draw(hass: HomeAssistant) -> None:
+    entry = await _hub(hass)
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_LOAD), context={"source": SOURCE_USER}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], _load("EV", target_type="kwh")
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"]["draw_kw"] == "draw_required_for_kwh"
+
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], _load("EV", target_type="kwh", draw_kw=11)
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY

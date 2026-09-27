@@ -73,7 +73,31 @@ def parse_solar(attributes: dict) -> list[SolarPeriod]:
         raise SolarFormatError("could not find start/power keys in forecast items")
     divisor = _POWER_KEYS[power_key]
 
-    starts = [_parse_dt(it[start_key]) for it in items]
+    # Malformed items (a null estimate, a bad timestamp, a missing key) are
+    # skipped rather than failing the whole forecast — and with it the refresh.
+    # Period ends come from every item with a usable start, estimate or not, so
+    # a missing estimate is a gap rather than the previous period stretched
+    # across it (which would invent surplus).
+    parsed: list[tuple[datetime, float | None]] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        try:
+            start = _parse_dt(it.get(start_key))
+        except (SolarFormatError, TypeError, ValueError):
+            continue
+        value = it.get(power_key)
+        power: float | None = None
+        if value is not None and not isinstance(value, bool):
+            try:
+                power = float(value) / divisor
+            except (TypeError, ValueError):
+                power = None
+        parsed.append((start, power))
+    if not any(p[1] is not None for p in parsed):
+        raise SolarFormatError(f"no usable items in {attr!r}")
+    parsed.sort(key=lambda p: p[0])
+    starts = [p[0] for p in parsed]
     # Most common gap → assumed period length for the final item.
     gaps: dict[float, int] = {}
     for a, b in zip(starts, starts[1:], strict=False):
@@ -83,10 +107,13 @@ def parse_solar(attributes: dict) -> list[SolarPeriod]:
     default = timedelta(seconds=max(gaps, key=gaps.get)) if gaps else timedelta(minutes=30)
 
     periods: list[SolarPeriod] = []
-    for i, it in enumerate(items):
-        start = starts[i]
+    for i, (start, power_kw) in enumerate(parsed):
+        if i + 1 < len(parsed) and parsed[i + 1][0] == start:
+            continue  # duplicate start: keep the last, which ends the next one
+        if power_kw is None:
+            continue
         end = starts[i + 1] if i + 1 < len(starts) else start + default
-        periods.append(SolarPeriod(start=start, end=end, power_kw=float(it[power_key]) / divisor))
+        periods.append(SolarPeriod(start=start, end=end, power_kw=power_kw))
     return periods
 
 
@@ -107,14 +134,24 @@ def merge_solar(*period_lists: list[SolarPeriod]) -> list[SolarPeriod]:
 def available_kwh_by_slot(periods: list[SolarPeriod], slots: list[Slot]) -> dict[datetime, float]:
     """Energy (kWh) forecast to be produced during each slot, by slot start.
 
-    Integrates each overlapping forecast period's power across the slot.
+    Integrates each overlapping forecast period's power across the slot. Both
+    lists are swept in start order, so this is linear rather than slots ×
+    periods (it runs on every refresh over a multi-day horizon).
     """
+    ordered = sorted(periods, key=lambda p: p.start)
     result: dict[datetime, float] = {}
-    for slot in slots:
+    lo = 0
+    for slot in sorted(slots, key=lambda s: s.start):
+        # Periods that ended before this slot can't overlap any later slot.
+        while lo < len(ordered) and ordered[lo].end <= slot.start:
+            lo += 1
         energy = 0.0
-        for p in periods:
+        j = lo
+        while j < len(ordered) and ordered[j].start < slot.end:
+            p = ordered[j]
             overlap = (min(slot.end, p.end) - max(slot.start, p.start)).total_seconds()
             if overlap > 0:
                 energy += p.power_kw * (overlap / 3600.0)
+            j += 1
         result[slot.start] = energy
     return result

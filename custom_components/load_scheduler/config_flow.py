@@ -372,11 +372,27 @@ class LoadSchedulerConfigFlow(ConfigFlow, domain=DOMAIN):
         entry = self._get_reconfigure_entry()
         errors: dict[str, str] = {}
         if user_input is not None:
-            error = _validate_price(self.hass, user_input[CONF_BUY_PRICE_ENTITY])
+            buy = user_input[CONF_BUY_PRICE_ENTITY]
+            error = _validate_price(self.hass, buy)
+            other = self.hass.config_entries.async_entry_for_domain_unique_id(DOMAIN, buy)
             if error:
                 errors["base"] = error
+            elif other is not None and other.entry_id != entry.entry_id:
+                errors["base"] = "already_configured"
             else:
-                return self.async_update_reload_and_abort(entry, data_updates=user_input)
+                # Full replacement, not `data_updates`: a merge keeps the old
+                # value of every optional field the user just cleared (the form
+                # simply omits it), so e.g. a removed sell sensor stayed wired.
+                # Keys the form doesn't show are carried over untouched.
+                form_keys = {str(key) for key in _hub_schema({}).schema}
+                data = {
+                    **{k: v for k, v in entry.data.items() if k not in form_keys or k == CONF_NAME},
+                    **_clean(user_input),
+                }
+                # The hub is keyed by its buy-price sensor (see `async_step_user`),
+                # so the unique id follows it — otherwise the old sensor could
+                # be added as a second hub and the new one could not.
+                return self.async_update_reload_and_abort(entry, unique_id=buy, data=data)
         defaults = {**entry.data, **(user_input or {})}
         return self.async_show_form(
             step_id="reconfigure", data_schema=_hub_schema(defaults), errors=errors
@@ -410,15 +426,45 @@ class LoadSubentryFlowHandler(ConfigSubentryFlow):
         self._defaults = dict(self._get_reconfigure_subentry().data)
         return await self.async_step_init(user_input)
 
+    def _validate(self, data: dict) -> dict[str, str]:
+        """Field errors for a load's settings (empty when valid)."""
+        errors: dict[str, str] = {}
+        controlled = data.get(CONF_CONTROLLED_ENTITY)
+        if controlled and data.get(CONF_MODE) != MODE_INFORMATIONAL:
+            # Two actuating loads on one switch fight each other: each reads the
+            # other's commands as manual overrides (backing off, cancelling
+            # boosts), and each load's ownership of the run is meaningless.
+            own_id = None if self._is_new else self._get_reconfigure_subentry().subentry_id
+            for sid, sub in self._get_entry().subentries.items():
+                if (
+                    sid != own_id
+                    and sub.subentry_type == SUBENTRY_TYPE_LOAD
+                    and sub.data.get(CONF_CONTROLLED_ENTITY) == controlled
+                    and sub.data.get(CONF_MODE) != MODE_INFORMATIONAL
+                ):
+                    errors[CONF_CONTROLLED_ENTITY] = "controlled_entity_in_use"
+                    break
+        if data.get(CONF_TARGET_TYPE) == TARGET_TYPE_KWH and not data.get(CONF_DRAW_KW):
+            # kWh is converted to run time at the load's draw; without one the
+            # target silently degrades to minutes.
+            errors[CONF_DRAW_KW] = "draw_required_for_kwh"
+        return errors
+
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+        errors: dict[str, str] = {}
         if user_input is not None:
             data = _clean(user_input)
-            if self._is_new:
-                return self.async_create_entry(title=data[CONF_NAME], data=data)
-            return self.async_update_and_abort(
-                self._get_entry(),
-                self._get_reconfigure_subentry(),
-                title=data[CONF_NAME],
-                data=data,
-            )
-        return self.async_show_form(step_id="init", data_schema=_load_schema(self._defaults))
+            errors = self._validate(data)
+            if not errors:
+                if self._is_new:
+                    return self.async_create_entry(title=data[CONF_NAME], data=data)
+                return self.async_update_and_abort(
+                    self._get_entry(),
+                    self._get_reconfigure_subentry(),
+                    title=data[CONF_NAME],
+                    data=data,
+                )
+        defaults = {**self._defaults, **(user_input or {})}
+        return self.async_show_form(
+            step_id="init", data_schema=_load_schema(defaults), errors=errors
+        )

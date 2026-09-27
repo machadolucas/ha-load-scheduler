@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 
 from .const import (
     CONF_ALLOW_SOLAR,
@@ -135,6 +135,8 @@ def build_load_params(
     delivered_minutes: float = 0.0,
     solar_enabled: bool = False,
     draw_kw: float | None = None,
+    running_minutes: float = 0.0,
+    stopped_minutes: float | None = None,
 ) -> LoadParams:
     """Combine static config + a (possibly runtime-overridden) target + ``now``.
 
@@ -143,22 +145,55 @@ def build_load_params(
     ``delivered_minutes`` — runtime already delivered today — is subtracted from
     both the target and the minimum-service floor (dynamic remaining), so a load
     that already ran enough (e.g. on solar) shrinks or skips its planned run.
+    For a sequential load with ``runs_per_day > 1`` it comes off the day's total
+    (runs × target) instead, which the engine re-splits into whole runs.
+
+    ``running_minutes`` is how long the load's current on-run has lasted (0 when
+    off); it only reaches the engine while the window is open, since the engine
+    pins the continuation of that run at the window start. ``stopped_minutes``
+    is how long ago it last switched off (None when on or unknown), so a replan
+    keeps ``min_off`` / ``min_separation`` from that stop.
     """
     if cfg.horizon_hours:
         # Multi-day: search the next N hours so the engine can defer an expensive
         # today to a cheaper tomorrow (once tomorrow's real prices are known).
         # A configured earliest/deadline still applies — the wizard collects all
         # three, and silently dropping two of them made them look like no-ops.
-        window = (now, now + timedelta(hours=cfg.horizon_hours))
+        # Added in UTC: N hours of real time, not of wall clock across a DST change.
+        horizon_end = (now.astimezone(UTC) + timedelta(hours=cfg.horizon_hours)).astimezone(
+            now.tzinfo
+        )
+        window = (now, horizon_end)
         if cfg.earliest is not None or cfg.deadline is not None:
             daily = resolve_window(now, cfg.earliest, cfg.deadline)
             start, end = max(window[0], daily[0]), min(window[1], daily[1])
             window = (start, end) if start < end else (start, start)
     else:
         window = resolve_window(now, cfg.earliest, cfg.deadline)
+    # Multi-run sequential: subtracting delivered from the per-run block shrank
+    # *every* block, so once run one finished the rest were never planned. The
+    # per-run length is passed for every sequential load: it fixes where a cycle
+    # in progress ends, whatever delivered says.
+    run_minutes: float | None = None
+    total = target_minutes
+    if cfg.mode is not ScheduleMode.NON_SEQUENTIAL:
+        run_minutes = target_minutes
+        total = target_minutes * max(1, cfg.runs_per_day)
+    # Before the window opens (window[0] > now) the run in progress isn't one the
+    # plan can continue — its first period can't start now.
+    running = running_minutes if window[0] <= now < window[1] else 0.0
+    # Measured to the window start: a window opening later is that much further
+    # from the stop.
+    stopped = None
+    if stopped_minutes is not None and running <= 0:
+        lead = (window[0].astimezone(UTC) - now.astimezone(UTC)).total_seconds() / 60.0
+        stopped = max(0.0, stopped_minutes) + max(0.0, lead)
     return LoadParams(
         mode=cfg.mode,
-        target_minutes=max(0.0, target_minutes - delivered_minutes),
+        target_minutes=max(0.0, total - delivered_minutes),
+        run_minutes=run_minutes,
+        running_minutes=max(0.0, running),
+        stopped_minutes=stopped,
         window=window,
         min_service_minutes=max(0.0, cfg.min_service_minutes - delivered_minutes),
         cap=cfg.cap,

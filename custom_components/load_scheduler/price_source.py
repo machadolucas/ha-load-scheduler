@@ -30,6 +30,7 @@ start, else inferred from the dominant slot length.
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -165,25 +166,64 @@ def _infer_slot_length(starts: list[datetime]) -> timedelta:
     return timedelta(seconds=max(gaps, key=lambda s: gaps[s]))
 
 
-def _parse_list(items: list[dict], spec: FormatSpec) -> list[ForecastSlot]:
-    """Turn one raw item list into ForecastSlots (end inferred if absent)."""
-    starts = [_parse_dt(it[spec.start_key]) for it in items]
-    slot_len = _infer_slot_length(starts)
+# Buy keys whose values are in cents; the engine works in €/kWh, so a feed that
+# says "ct" in its key is scaled rather than read 100× too expensive.
+_CENT_KEYS = {"price_ct_per_kwh"}
+
+
+def _to_float(value: object) -> float | None:
+    """A price as a float, or ``None`` for a missing/unparseable value."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_list(items: list, spec: FormatSpec) -> list[ForecastSlot]:
+    """Turn a raw item list into time-ordered ForecastSlots (end inferred if absent).
+
+    Malformed items are skipped rather than failing the whole forecast: Nord
+    Pool publishes ``raw_tomorrow`` with ``null`` values before the auction, and
+    one bad item must not blind every load. Items are sorted and de-duplicated
+    by start *before* a missing end is inferred from the next start, so an
+    unordered feed or an overlapping list tail can't fabricate a negative or
+    zero-length slot. Ends are inferred from every item with a usable *start*,
+    priced or not, so a null price leaves a gap instead of stretching the
+    previous (possibly cheap) slot across it.
+    """
+    scale = 0.01 if spec.buy_key in _CENT_KEYS else 1.0
+    parsed: list[tuple[datetime, datetime | None, float | None, float | None]] = []
+    seen: set[datetime] = set()
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        try:
+            start = _parse_dt(it.get(spec.start_key))
+            end = (
+                _parse_dt(it[spec.end_key])
+                if spec.end_key and it.get(spec.end_key) is not None
+                else None
+            )
+        except (PriceFormatError, ValueError):
+            continue
+        if start in seen:
+            continue  # keep the first copy, matching list order
+        seen.add(start)
+        buy = _to_float(it.get(spec.buy_key))
+        sell = _to_float(it.get(spec.sell_key)) if spec.sell_key else None
+        parsed.append((start, end, None if buy is None else buy * scale, sell))
+    parsed.sort(key=lambda p: p[0])
+
+    slot_len = _infer_slot_length([p[0] for p in parsed])
     slots: list[ForecastSlot] = []
-    for i, it in enumerate(items):
-        start = starts[i]
-        if spec.end_key and spec.end_key in it:
-            end = _parse_dt(it[spec.end_key])
-        elif i + 1 < len(starts):
-            end = starts[i + 1]
-        else:
-            end = start + slot_len
-        sell = (
-            float(it[spec.sell_key])
-            if spec.sell_key and it.get(spec.sell_key) is not None
-            else None
-        )
-        slots.append(ForecastSlot(start=start, end=end, buy=float(it[spec.buy_key]), sell=sell))
+    for i, (start, end, buy, sell) in enumerate(parsed):
+        if buy is None:
+            continue
+        if end is None or end <= start:
+            end = parsed[i + 1][0] if i + 1 < len(parsed) else start + slot_len
+        slots.append(ForecastSlot(start=start, end=end, buy=buy, sell=sell))
     return slots
 
 
@@ -191,12 +231,9 @@ def normalize(attributes: dict, spec: FormatSpec | None = None) -> list[Forecast
     """Normalise a price entity's attributes into time-ordered ForecastSlots.
 
     Concatenates the yesterday, today and tomorrow lists (either flank may be
-    missing), parses each item, sorts by start and drops exact-duplicate start
-    times (keeping the first), which guards against overlapping list tails.
-
-    Concatenation order is chronological on purpose: ``_parse_list`` infers a
-    missing ``end`` from the *next item's start in list order*, so an
-    out-of-order concatenation would fabricate slot lengths at the seams.
+    missing) and parses them; ``_parse_list`` sorts by start and drops
+    exact-duplicate start times (keeping the first, in yesterday → tomorrow
+    order), which guards against overlapping list tails.
     Yesterday's slots are kept rather than filtered here because the engine's
     window already discards anything that has fully elapsed — and dropping them
     eagerly is exactly what made a market-day-anchored feed invisible for the
@@ -212,34 +249,37 @@ def normalize(attributes: dict, spec: FormatSpec | None = None) -> list[Forecast
         raw += list(attributes.get(attr) or [])
 
     slots = _parse_list(raw, spec)
-    slots.sort(key=lambda s: s.start)
-
-    deduped: list[ForecastSlot] = []
-    seen: set[datetime] = set()
-    for slot in slots:
-        if slot.start in seen:
-            continue
-        seen.add(slot.start)
-        deduped.append(slot)
-    return deduped
+    if raw and not slots:
+        raise PriceFormatError("no usable items in the price forecast")
+    return slots
 
 
 def merge_sell(buy_slots: list[ForecastSlot], sell_slots: list[ForecastSlot]) -> list[ForecastSlot]:
-    """Attach sell prices from a *separate* sell-forecast entity by start time.
+    """Attach sell prices from a *separate* sell-forecast entity.
 
     Used when buy and sell come from two different entities; the sell entity is
-    normalised the same way (its ``buy`` field carries the sell value).
+    normalised the same way (its ``buy`` field carries the sell value). A buy
+    slot takes the sell slot whose interval *contains* its start, not just one
+    with an identical start: an hourly sell feed against a quarter-hourly buy
+    feed would otherwise leave three of every four slots without a sell price.
+    Nothing is extrapolated beyond the sell feed's coverage.
     """
-    sell_by_start = {s.start: s.buy for s in sell_slots}
-    return [
-        ForecastSlot(
-            start=b.start,
-            end=b.end,
-            buy=b.buy,
-            sell=sell_by_start.get(b.start, b.sell),
+    ordered = sorted(sell_slots, key=lambda s: s.start)
+    starts = [s.start for s in ordered]
+
+    def sell_at(when: datetime) -> float | None:
+        i = bisect_right(starts, when) - 1
+        if i >= 0 and ordered[i].start <= when < ordered[i].end:
+            return ordered[i].buy
+        return None
+
+    out: list[ForecastSlot] = []
+    for b in buy_slots:
+        sell = sell_at(b.start)
+        out.append(
+            ForecastSlot(start=b.start, end=b.end, buy=b.buy, sell=b.sell if sell is None else sell)
         )
-        for b in buy_slots
-    ]
+    return out
 
 
 def slots_from_state(state) -> list[ForecastSlot]:

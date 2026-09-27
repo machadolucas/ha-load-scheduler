@@ -35,6 +35,7 @@ from .const import (
     CONF_BASELINE_ENTITY,
     CONF_BUY_PRICE_ENTITY,
     CONF_CONSUMPTION_BASELINE_W,
+    CONF_DELIVERED_ENTITY,
     CONF_FORECAST_PRICE_ENTITY,
     CONF_FORECAST_PRICE_MARGIN,
     CONF_SELL_PRICE_ENTITY,
@@ -53,6 +54,7 @@ from .engine import Period, RunSource
 from .models import LoadConfig, build_load_params
 from .persistence import RuntimeStore
 from .rationale import PlanRationale
+from .units import power_to_watts
 from .windows import next_time
 
 # How often the recorder-backed "delivered today" measurement is recomputed.
@@ -171,6 +173,16 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         # delivered_entity but does have a feedback/controlled entity to measure.
         self._delivered_today: dict[str, float] = {}
         self._delivered_at: datetime | None = None
+        # Local date the measurement above belongs to: it must not survive
+        # midnight, or the first refreshes of a new day plan against yesterday.
+        self._delivered_day = None
+        # Last good reading of each explicit delivered sensor, with its local
+        # date, so a brief dropout doesn't re-plan the whole target.
+        self._delivered_last: dict[str, tuple[object, float]] = {}
+        # Source-parse failures already warned about (logged on transition only,
+        # like the price gap), keyed by a short source label.
+        self._source_errors: set[str] = set()
+        self._config_cache: dict[str, tuple[object, LoadConfig]] = {}
         # True while the price forecast has slots but none covering *now*; kept
         # so the warning is logged on transition, not on every 5-minute tick.
         self._price_gap: bool = False
@@ -244,8 +256,21 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         }
 
     def load_config(self, subentry_id: str) -> LoadConfig:
-        """The static config for a load subentry."""
-        return LoadConfig.from_subentry(self.config_entry.subentries[subentry_id].data)
+        """The static config for a load subentry.
+
+        Cached per subentry: the actuator asks for it several times per load on
+        every watched state change (net-energy samples arrive every few seconds),
+        and re-parsing the subentry each time is pure waste. Keyed on the data
+        mapping's identity — a reconfigure replaces the subentry (and its data)
+        rather than mutating it, so a stale entry can't be served.
+        """
+        data = self.config_entry.subentries[subentry_id].data
+        cached = self._config_cache.get(subentry_id)
+        if cached is not None and cached[0] is data:
+            return cached[1]
+        cfg = LoadConfig.from_subentry(data)
+        self._config_cache[subentry_id] = (data, cfg)
+        return cfg
 
     @callback
     def _update_price_issue(self, *, has_slots: bool) -> None:
@@ -437,6 +462,11 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         if self._forecast_entity:
             watched.append(self._forecast_entity)
         watched.extend(self._solar_entities)
+        # An explicit delivered sensor reaching the target should stop the run
+        # now, not at the next 5-minute tick (the refresh is debounced).
+        for subentry in self.config_entry.subentries.values():
+            if delivered := subentry.data.get(CONF_DELIVERED_ENTITY):
+                watched.append(delivered)
         self.config_entry.async_on_unload(
             async_track_state_change_event(self.hass, watched, self._handle_source_change)
         )
@@ -457,29 +487,32 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
             self.hass, self.async_request_refresh(), "ls_source_change"
         )
 
+    # User actions refresh immediately rather than through the 10 s debouncer:
+    # a boost pressed (or a load disabled) just after any other refresh would
+    # otherwise take up to 10 s to reach the relay. They're rare and cheap.
     async def async_set_target(self, subentry_id: str, minutes: float) -> None:
         """Update a load's target, persist it, and recompute."""
         self.runtime_for(subentry_id).target_minutes = minutes
         self._store.async_schedule_save(self._runtime_snapshot)
-        await self.async_request_refresh()
+        await self.async_refresh()
 
     async def async_set_enabled(self, subentry_id: str, enabled: bool) -> None:
         """Enable/disable a load, persist it, and recompute."""
         self.runtime_for(subentry_id).enabled = enabled
         self._store.async_schedule_save(self._runtime_snapshot)
-        await self.async_request_refresh()
+        await self.async_refresh()
 
     async def async_boost(self, subentry_id: str, minutes: float) -> None:
         """Force a load to run now for ``minutes`` (overrides price + enable)."""
         self.runtime_for(subentry_id).boost_until = dt_util.utcnow() + timedelta(minutes=minutes)
         self._store.async_schedule_save(self._runtime_snapshot)
-        await self.async_request_refresh()
+        await self.async_refresh()
 
     async def async_cancel_boost(self, subentry_id: str) -> None:
         """Cancel an active boost, persist, and recompute."""
         self.runtime_for(subentry_id).boost_until = None
         self._store.async_schedule_save(self._runtime_snapshot)
-        await self.async_request_refresh()
+        await self.async_refresh()
 
     def _price_slots(self) -> list[engine.Slot]:
         """Real price slots, optionally extended with the predictor's forecast.
@@ -496,7 +529,16 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         if self._sell_entity:
             sell_state = self.hass.states.get(self._sell_entity)
             if sell_state is not None:
-                real = price_source.merge_sell(real, price_source.slots_from_state(sell_state))
+                # An optional sell feed going dead must not throw away a healthy
+                # buy forecast (and with it every load's plan): keep buy-only
+                # slots, whose embedded sell (if any) still stands.
+                try:
+                    sell = price_source.slots_from_state(sell_state)
+                except price_source.PriceFormatError as err:
+                    self._note_source_error("sell", err)
+                else:
+                    self._clear_source_error("sell")
+                    real = price_source.merge_sell(real, sell)
         combined = list(real) + self._forecast_slots(real)
         return [
             engine.Slot(start=fs.start, end=fs.end, buy=fs.buy, sell=fs.sell) for fs in combined
@@ -514,19 +556,40 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         try:
             forecast = price_source.slots_from_state(state)
         except price_source.PriceFormatError as err:
-            _LOGGER.warning("Forecast price source unusable: %s", err)
+            self._note_source_error("forecast", err)
             return []
-        last_real = max((s.start for s in real), default=None)
-        return [
-            price_source.ForecastSlot(
-                start=f.start,
-                end=f.end,
-                buy=f.buy + self._forecast_margin,
-                sell=f.sell,
+        self._clear_source_error("forecast")
+        # Extend from the real feed's *end*, not its last start: with an hourly
+        # real tail and a quarter-hourly forecast, the forecast's :15/:30/:45
+        # slots would otherwise overlap the last real hour and count the same
+        # wall time twice. A forecast slot straddling the seam is clipped.
+        real_end = max((s.end for s in real), default=None)
+        out: list[price_source.ForecastSlot] = []
+        for f in forecast:
+            start = f.start if real_end is None else max(f.start, real_end)
+            if f.end <= start:
+                continue
+            out.append(
+                price_source.ForecastSlot(
+                    start=start, end=f.end, buy=f.buy + self._forecast_margin, sell=f.sell
+                )
             )
-            for f in forecast
-            if last_real is None or f.start > last_real
-        ]
+        return out
+
+    @callback
+    def _note_source_error(self, source: str, err: Exception) -> None:
+        """Warn once when an optional source becomes unusable (then debug)."""
+        if source in self._source_errors:
+            _LOGGER.debug("%s source still unusable: %s", source, err)
+            return
+        self._source_errors.add(source)
+        _LOGGER.warning("%s source unusable: %s", source, err)
+
+    @callback
+    def _clear_source_error(self, source: str) -> None:
+        if source in self._source_errors:
+            self._source_errors.discard(source)
+            _LOGGER.info("%s source usable again", source)
 
     def _excess_by_slot(self, slots: list[engine.Slot]) -> dict[datetime, float]:
         """Predicted solar excess (kWh) per slot start = forecast PV − baseline.
@@ -542,7 +605,9 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
             try:
                 forecasts.append(solar_source.parse_solar(dict(state.attributes)))
             except solar_source.SolarFormatError as err:
-                _LOGGER.warning("Solar source %s unusable: %s", entity_id, err)
+                self._note_source_error(f"Solar {entity_id}", err)
+            else:
+                self._clear_source_error(f"Solar {entity_id}")
         if not forecasts:
             return {}
         kwh = solar_source.available_kwh_by_slot(solar_source.merge_solar(*forecasts), slots)
@@ -606,6 +671,14 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
 
     async def _maybe_refresh_delivered(self, now_utc: datetime) -> None:
         """Refresh auto-measured delivered-today, throttled to ~2 min."""
+        today = dt_util.as_local(now_utc).date()
+        if self._delivered_day is not None and self._delivered_day != today:
+            # A new local day: yesterday's on-time must not be planned against,
+            # even for the one refresh until the query below lands (or if the
+            # recorder is failing and it never does).
+            self._delivered_today = {}
+            self._delivered_day = today
+            self._delivered_at = None
         if (
             self._delivered_at is None
             or (now_utc - self._delivered_at).total_seconds() >= DELIVERED_REFRESH_S
@@ -635,7 +708,14 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
                     if cfg.controlled_entity:
                         targets.append((subentry_id, cfg.controlled_entity, None))
                     continue
-                targets.append((subentry_id, cfg.feedback_entity, cfg.feedback_idle_w))
+                # The recorder rows are read without attributes, so express the
+                # W threshold in the sensor's *current* unit once here: a kW
+                # feedback sensor compared against a W threshold read idle all day.
+                threshold = cfg.feedback_idle_w
+                if threshold is not None:
+                    per_unit = power_to_watts(1.0, fb_state.attributes.get("unit_of_measurement"))
+                    threshold = threshold / per_unit if per_unit else threshold
+                targets.append((subentry_id, cfg.feedback_entity, threshold))
             elif cfg.controlled_entity:
                 targets.append((subentry_id, cfg.controlled_entity, None))
         return targets
@@ -668,8 +748,16 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         def _measure() -> dict[str, float]:
             out: dict[str, float] = {}
             for subentry_id, entity_id, threshold in targets:
+                # Only state + last_changed are read, so skip the attribute join:
+                # this runs every couple of minutes over the whole day per load,
+                # and a power feedback sensor has thousands of rows by evening.
                 changes = state_changes_during_period(
-                    self.hass, start, end, entity_id, include_start_time_state=True
+                    self.hass,
+                    start,
+                    end,
+                    entity_id,
+                    no_attributes=True,
+                    include_start_time_state=True,
                 )
                 out[subentry_id] = _on_minutes(changes.get(entity_id, []), start, end, threshold)
             return out
@@ -677,6 +765,7 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         try:
             self._delivered_today = await get_instance(self.hass).async_add_executor_job(_measure)
             self._delivered_at = end
+            self._delivered_day = dt_util.as_local(end).date()
         except Exception as err:  # noqa: BLE001 - recorder may be unavailable
             _LOGGER.debug("Delivered-today measurement unavailable: %s", err)
 
@@ -696,21 +785,28 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         if not cfg.delivered_entity:
             return self._delivered_today.get(subentry_id, 0.0)
         state = self.hass.states.get(cfg.delivered_entity)
-        if state is None:
-            return 0.0
+        today = dt_util.as_local(dt_util.utcnow()).date()
         try:
-            value = float(state.state)
+            value = float(state.state) if state is not None else None
         except (TypeError, ValueError):
-            return 0.0
+            value = None
+        if value is None:
+            # A dropout (unavailable/unknown) must not read as "nothing delivered
+            # yet" and re-plan the whole target: hold today's last good value.
+            last = self._delivered_last.get(subentry_id)
+            return last[1] if last is not None and last[0] == today else 0.0
         unit = str(state.attributes.get("unit_of_measurement", "")).lower()
         if unit in ("h", "hr", "hrs", "hour", "hours"):
-            return value * 60.0
-        if unit in ("s", "sec", "secs", "second", "seconds"):
-            return value / 60.0
-        if unit in ("kwh", "wh"):
+            minutes = value * 60.0
+        elif unit in ("s", "sec", "secs", "second", "seconds"):
+            minutes = value / 60.0
+        elif unit in ("kwh", "wh"):
             kwh = value / 1000.0 if unit == "wh" else value
-            return (kwh / cfg.draw_kw * 60.0) if cfg.draw_kw else 0.0
-        return value  # minutes (explicit or assumed)
+            minutes = (kwh / cfg.draw_kw * 60.0) if cfg.draw_kw else 0.0
+        else:
+            minutes = value  # minutes (explicit or assumed)
+        self._delivered_last[subentry_id] = (today, minutes)
+        return minutes
 
     def _failsafe_periods(self, cfg: LoadConfig, rt: LoadRuntime, now: datetime) -> list[Period]:
         """A fixed-time fallback run used when no price forecast is available."""
@@ -719,9 +815,34 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         minutes = max(rt.target_minutes, cfg.min_service_minutes)
         if minutes <= 0:
             return []
-        start = next_time(now, cfg.failsafe_start)
+        # Keep today's occurrence while it is still running: `next_time` only
+        # looks forward, so once the start passed the next refresh would move
+        # the run to tomorrow and the actuator would switch it off minutes in.
+        # (Duration is added in UTC so a DST night keeps its real length.)
+        today = dt_util.as_utc(
+            datetime.combine(dt_util.as_local(now).date(), cfg.failsafe_start, now.tzinfo)
+        )
+        if today <= dt_util.as_utc(now) < today + timedelta(minutes=minutes):
+            start = today
+        else:
+            start = dt_util.as_utc(next_time(now, cfg.failsafe_start))
         end = start + timedelta(minutes=minutes)
-        return [Period(dt_util.as_utc(start), dt_util.as_utc(end), RunSource.GRID, 0.0)]
+        return [Period(start, end, RunSource.GRID, 0.0)]
+
+    @staticmethod
+    def _avg_buy(slots: list[engine.Slot], start: datetime, end: datetime) -> float:
+        """Minutes-weighted buy price over ``[start, end)`` (0 when uncovered).
+
+        A boost runs at grid price whatever the plan thought; costing it at 0
+        made the schedule's est_cost understate exactly the runs the user forced.
+        """
+        total = weighted = 0.0
+        for s in slots:
+            overlap = (min(s.end, end) - max(s.start, start)).total_seconds()
+            if overlap > 0:
+                total += overlap
+                weighted += overlap * s.buy
+        return weighted / total if total else 0.0
 
     @staticmethod
     def _consume_excess(
@@ -791,11 +912,17 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
             # Measure delivered-today once and reuse it for both the plan math
             # and the rationale (it's what shrinks the target / min-service floor).
             delivered = self._delivered_minutes(cfg, subentry_id)
+            multi_run = cfg.mode is not engine.ScheduleMode.NON_SEQUENTIAL and cfg.runs_per_day > 1
             plan = LoadPlan(
                 target_minutes=rt.target_minutes,
                 enabled=rt.enabled,
                 delivered_minutes=delivered,
-                remaining_minutes=max(0.0, rt.target_minutes - delivered),
+                # Multi-run sequential loads plan against the day's total
+                # (runs × target), so report what's left of that, not of one run.
+                remaining_minutes=max(
+                    0.0,
+                    rt.target_minutes * (cfg.runs_per_day if multi_run else 1) - delivered,
+                ),
                 min_service_remaining=max(0.0, cfg.min_service_minutes - delivered),
                 solar_enabled=solar,
             )
@@ -814,6 +941,26 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
                     )
                     for s in base_slots
                 ]
+                # How long the current on-run has lasted, so a replan mid-run
+                # continues it instead of cutting it short of min_run (the engine
+                # pins it). Informational loads are never driven: an always-on
+                # plug would otherwise pin their display block to "now".
+                # And how long ago it last stopped, so the stateless replan keeps
+                # min_off / min_separation from that stop.
+                on_since = off_since = None
+                if cfg.controlled_entity and not cfg.is_informational:
+                    st = self.hass.states.get(cfg.controlled_entity)
+                    run_on_since = getattr(self.actuator, "_run_on_since", None)
+                    if run_on_since is not None:
+                        on_since = run_on_since(subentry_id, cfg.controlled_entity)
+                    elif st is not None and st.state == "on":
+                        on_since = st.last_changed
+                    # Only a stop the actuator actually *observed* counts: HA
+                    # re-stamps `last_changed` on restart, so a load that had been
+                    # off for hours would look freshly stopped and its first run
+                    # would be held back by min_off/separation for no reason.
+                    if st is not None and st.state == "off" and self.actuator is not None:
+                        off_since = getattr(self.actuator, "_off_since", {}).get(subentry_id)
                 params = build_load_params(
                     cfg,
                     now,
@@ -821,11 +968,17 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
                     delivered_minutes=delivered,
                     solar_enabled=solar,
                     draw_kw=cfg.draw_kw,
+                    running_minutes=(
+                        max(0.0, (now_utc - on_since).total_seconds() / 60.0) if on_since else 0.0
+                    ),
+                    stopped_minutes=(
+                        max(0.0, (now_utc - off_since).total_seconds() / 60.0)
+                        if off_since
+                        else None
+                    ),
                 )
                 periods = engine.compute_plan(slots, params)
                 rat = rationale.explain(slots, params, periods, now=now)
-                if solar:
-                    self._consume_excess(residual, base_slots, periods, cfg.draw_kw)
             else:
                 periods = self._failsafe_periods(cfg, rt, now)
                 if not periods:
@@ -835,12 +988,22 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
                 )
             # A manual boost overrides both the price plan and the enable switch.
             if rt.boost_until and now_utc < rt.boost_until:
-                boost = Period(now_utc, rt.boost_until, RunSource.GRID, 0.0)
+                boost = Period(
+                    now_utc,
+                    rt.boost_until,
+                    RunSource.GRID,
+                    self._avg_buy(base_slots, now_utc, rt.boost_until),
+                )
                 periods = engine.merge_periods([*periods, boost])
                 plan.error = None
                 plan.boost_until = rt.boost_until
                 if rat is not None:
                     rat.boost = True
+            # Claim solar only once the boost is folded in: a boosted run through
+            # a solar slot uses that excess too, and deducting before the merge
+            # let a lower-priority load plan on the same forecast surplus.
+            if solar and base_slots and periods:
+                self._consume_excess(residual, base_slots, periods, cfg.draw_kw)
             plan.periods = periods
             plan.scheduled_minutes = sum(p.minutes for p in periods)
             if cfg.draw_kw:

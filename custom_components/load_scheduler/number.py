@@ -76,3 +76,8 @@ class LoadTargetNumber(LoadSchedulerEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         minutes = value / self._draw * 60.0 if self._kwh else value
         await self.coordinator.async_set_target(self._subentry_id, minutes)
+        # The runtime is the source of truth and is already updated; publish it
+        # now. The refresh is debounced, so a second click within the cooldown
+        # would otherwise leave the old value showing and the card's stepper
+        # would step from it — losing the click.
+        self.async_write_ha_state()

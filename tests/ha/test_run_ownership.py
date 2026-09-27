@@ -128,8 +128,14 @@ async def test_our_coexist_run_is_still_ours_after_a_reload(hass: HomeAssistant,
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    assert entry.runtime_data.runtime[subentry_id].driven is False  # switched off
     assert _called_for(off)
+    # Ownership is held until the off is observed (a lost turn_off must still
+    # be retried), then released.
+    assert entry.runtime_data.runtime[subentry_id].driven is True
+    hass.states.async_set(ENTITY, "off")
+    await hass.async_block_till_done()
+    assert entry.runtime_data.runtime[subentry_id].driven is False
+    assert entry.runtime_data.foreign_log.get(subentry_id, []) == []
 
 
 async def test_external_coexist_run_survives_a_reload_unowned(hass: HomeAssistant, freezer) -> None:
@@ -237,3 +243,189 @@ async def test_unowned_run_issue_raised_and_cleared(hass: HomeAssistant, freezer
     await coordinator.async_refresh()
     await hass.async_block_till_done()
     assert _issue(hass, subentry_id) is None
+
+
+# ── unavailable / unknown is not a state (Z2M/MQTT restore after a restart) ──
+
+
+async def test_unavailable_at_setup_then_off_runs_plan_without_override(
+    hass: HomeAssistant,
+) -> None:
+    # A Z2M switch restores as "unavailable", then reports "off". That is not a
+    # manual off: no override, no cancelled boost — the plan just runs.
+    on = async_mock_service(hass, "homeassistant", "turn_on")
+    async_mock_service(hass, "homeassistant", "turn_off")
+    entry = await _setup(hass, cheap=(20, 21), controlled_state="unavailable", coexist=False)
+    subentry_id = next(iter(entry.subentries))
+    coordinator = entry.runtime_data
+    await coordinator.async_boost(subentry_id, 30)
+    await hass.async_block_till_done()
+    assert not _called_for(on)  # nothing is sent to a relay that can't hear it
+
+    hass.states.async_set(ENTITY, "off")
+    await hass.async_block_till_done()
+
+    assert _called_for(on)
+    assert coordinator.actuator._override_active(subentry_id) is False
+    assert coordinator.runtime[subentry_id].boost_until is not None
+    assert coordinator.foreign_log.get(subentry_id, []) == []
+
+
+async def test_unavailable_then_on_keeps_our_ownership(hass: HomeAssistant) -> None:
+    async_mock_service(hass, "homeassistant", "turn_on")
+    async_mock_service(hass, "homeassistant", "turn_off")
+    entry = await _setup(hass, cheap=(0, 1), controlled_state="off")
+    subentry_id = next(iter(entry.subentries))
+    coordinator = entry.runtime_data
+    hass.states.async_set(ENTITY, "on")  # our command confirms
+    await hass.async_block_till_done()
+    assert coordinator.runtime[subentry_id].driven is True
+
+    hass.states.async_set(ENTITY, "unavailable")
+    await hass.async_block_till_done()
+    assert coordinator.runtime[subentry_id].driven is True
+    hass.states.async_set(ENTITY, "on")
+    await hass.async_block_till_done()
+
+    assert coordinator.runtime[subentry_id].driven is True
+    assert coordinator.actuator._override_active(subentry_id) is False
+    assert coordinator.foreign_log.get(subentry_id, []) == []
+
+
+async def test_unavailable_then_off_ends_our_run_without_override(hass: HomeAssistant) -> None:
+    async_mock_service(hass, "homeassistant", "turn_on")
+    async_mock_service(hass, "homeassistant", "turn_off")
+    entry = await _setup(hass, cheap=(0, 1), controlled_state="off")
+    subentry_id = next(iter(entry.subentries))
+    coordinator = entry.runtime_data
+    hass.states.async_set(ENTITY, "on")
+    await hass.async_block_till_done()
+
+    hass.states.async_set(ENTITY, "unavailable")
+    await hass.async_block_till_done()
+    hass.states.async_set(ENTITY, "off")
+    await hass.async_block_till_done()
+
+    # The run is over (it came back off), but nobody switched it off by hand.
+    assert coordinator.actuator._override_active(subentry_id) is False
+    assert coordinator.foreign_log.get(subentry_id, []) == []
+    # Nor is it an observed stop: it may have been off for hours, so it must not
+    # start a min_off / separation guard that holds the next run back.
+    assert subentry_id not in coordinator.actuator._off_since
+
+
+async def test_coexist_run_stays_owned_across_restart_with_unavailable_relay(
+    hass: HomeAssistant, freezer
+) -> None:
+    async_mock_service(hass, "homeassistant", "turn_on")
+    off = async_mock_service(hass, "homeassistant", "turn_off")
+    entry = await _setup(hass, cheap=(0, 1), controlled_state="off")
+    subentry_id = next(iter(entry.subentries))
+    hass.states.async_set(ENTITY, "on")
+    await hass.async_block_till_done()
+    await _flush_store(hass, freezer)
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    hass.states.async_set(ENTITY, "unavailable")  # the relay is still restoring
+    hass.states.async_set("sensor.prices", "ok", _price_attributes(cheap=(20, 21)))
+    off.clear()
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.runtime_data.runtime[subentry_id].driven is True  # not voided
+    assert not _called_for(off)
+
+    hass.states.async_set(ENTITY, "on")  # it reports: still our run
+    await hass.async_block_till_done()
+    assert _called_for(off)  # ...so it's switched off at the end of its period
+
+
+async def test_same_command_is_not_resent_while_in_flight(hass: HomeAssistant, freezer) -> None:
+    on = async_mock_service(hass, "homeassistant", "turn_on")
+    async_mock_service(hass, "homeassistant", "turn_off")
+    started: list = []
+    hass.bus.async_listen("load_scheduler_run_started", started.append)
+    entry = await _setup(hass, cheap=(0, 1), controlled_state="unavailable", coexist=False)
+    coordinator = entry.runtime_data
+    assert on == []  # unavailable: nothing sent
+
+    hass.states.async_set(ENTITY, "off")
+    await hass.async_block_till_done()
+    assert len(on) == 1
+    # The relay doesn't follow; every refresh reconciles again.
+    for _ in range(3):
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+    assert len(on) == 1
+    assert len(started) == 1
+
+    freezer.tick(timedelta(seconds=61))  # past the resend interval: retry
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert len(on) == 2
+    assert len(started) == 2
+
+
+async def test_failed_off_keeps_ownership_and_is_retried(hass: HomeAssistant, freezer) -> None:
+    # B2: a turn_off that never lands must not disown a coexist run — else the
+    # coexist guard stops every retry and the load stays on forever.
+    async_mock_service(hass, "homeassistant", "turn_on")
+    off = async_mock_service(hass, "homeassistant", "turn_off")
+    entry = await _setup(hass, cheap=(0, 1), controlled_state="off")
+    subentry_id = next(iter(entry.subentries))
+    coordinator = entry.runtime_data
+    hass.states.async_set(ENTITY, "on")
+    await hass.async_block_till_done()
+
+    hass.states.async_set("sensor.prices", "ok", _price_attributes(cheap=(20, 21)))
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert len([c for c in off if c.data.get("entity_id") == ENTITY]) == 1
+    assert coordinator.runtime[subentry_id].driven is True  # held until observed
+
+    freezer.tick(timedelta(seconds=61))
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert len([c for c in off if c.data.get("entity_id") == ENTITY]) == 2  # retried
+
+    hass.states.async_set(ENTITY, "off")  # finally lands: our echo
+    await hass.async_block_till_done()
+    assert coordinator.runtime[subentry_id].driven is False
+    assert coordinator.actuator._override_active(subentry_id) is False
+    assert coordinator.foreign_log.get(subentry_id, []) == []
+
+
+async def test_manual_off_of_our_run_still_disowns(hass: HomeAssistant) -> None:
+    async_mock_service(hass, "homeassistant", "turn_on")
+    async_mock_service(hass, "homeassistant", "turn_off")
+    entry = await _setup(hass, cheap=(0, 1), controlled_state="off")
+    subentry_id = next(iter(entry.subentries))
+    coordinator = entry.runtime_data
+    hass.states.async_set(ENTITY, "on")
+    await hass.async_block_till_done()
+
+    hass.states.async_set(ENTITY, "off", context=Context(user_id="u1"))
+    await hass.async_block_till_done()
+
+    assert coordinator.runtime[subentry_id].driven is False
+    assert coordinator.actuator._override_active(subentry_id) is True
+
+
+async def test_override_expiry_is_a_scheduled_wake_up(hass: HomeAssistant, freezer) -> None:
+    # After a manual on of a normal load, the back-off's end is itself a
+    # boundary: precedence is re-evaluated then (and the load switched off).
+    async_mock_service(hass, "homeassistant", "turn_on")
+    off = async_mock_service(hass, "homeassistant", "turn_off")
+    entry = await _setup(hass, cheap=(20, 21), controlled_state="off", coexist=False)
+    subentry_id = next(iter(entry.subentries))
+    actuator = entry.runtime_data.actuator
+    hass.states.async_set(ENTITY, "on", context=Context(user_id="u1"))
+    await hass.async_block_till_done()
+    until = actuator._override_until[subentry_id]
+    assert min(actuator._boundaries_after(dt_util.utcnow())) == until
+    assert not _called_for(off)
+
+    freezer.move_to(until + timedelta(seconds=1))
+    async_fire_time_changed(hass, dt_util.utcnow())
+    await hass.async_block_till_done()
+    assert _called_for(off)

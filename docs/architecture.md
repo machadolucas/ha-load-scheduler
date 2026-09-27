@@ -42,6 +42,7 @@ solar entity ─┘ solar_source + baseline → excess ───┤
 | `models.py` | Subentry config → `LoadConfig` → `LoadParams` | no |
 | `rationale.py` | Pure decision facts (skip reason, cap-qualifying slots, solar coverage) for the diagnostic card's plain-English narration | no |
 | `divert.py` | Pure real-time divert decision: predicted interval-close net, load-aware engage/shed, priority-preserving | no |
+| `units.py` | Pure power-unit normalisation (`power_to_watts`) for feedback sensors vs the W idle threshold | no |
 | `competing.py` | Pure competing-controller verdict: burst / same-local-time recurrence over a decaying 7-day log of foreign flips | no |
 | `coordinator.py` | Read sources, allocate solar by priority, run engine per load, repairs, statistics baseline | yes |
 | `actuation.py` | Resolve desired state (override → safety → plan → divert), drive controlled entities, restart catch-up | yes |
@@ -72,14 +73,35 @@ solar entity ─┘ solar_source + baseline → excess ───┤
   non-sequential load buys whole runs (`_plan_runs`) instead of scattered slots:
   one `min_run` at a time, the last absorbing the remainder so the target is
   still exact. Picking the cheapest slots and *then* deleting sub-`min_run`
-  fragments threw those minutes away and left the load short.
+  fragments threw those minutes away and left the load short. `min_off` shapes
+  selection the same way (a load with only `min_off` goes through `_plan_runs`
+  too); `enforce_min_run_off` is just a safety net that prices any bridged gap.
+  Selection runs on a minute grid (`_Grid`) so a partially-used slot's remainder
+  stays buyable. A run already in progress (`running_minutes`, from the actuator's
+  on-since) is pinned at the window start until it has served `min_run`, and a
+  tail shorter than `min_run` is legal when it extends an existing run — so a
+  replan mid-run never cuts a compressor short, and dynamic remaining never
+  strands the last few minutes.
+- **The price `cap` applies to sequential loads too**; only the min-service floor
+  is cap-exempt (a floor-length uncapped block when no capped block fits). In
+  non-sequential planning only the floor's own minutes of a slot are exempt.
+- **Multi-run sequential** (`runs_per_day > 1`) subtracts delivered from the
+  day's total (runs × target) and re-splits the rest into whole runs.
 - **Runtime state** (target / enabled / boost) lives in the `Store` (source of
   truth, in backups); entities are views/setters over it.
 - **Actuation precedence** (per tick): manual override → low-temp safety floor →
   scheduled plan (incl. boost / min-service) → real-time divert → off. A manual
   **off** stops the current run (cancels any boost, suppresses the rest of the
   active period); a manual **on** is left alone and credited via the measured
-  delivered sensor. Boost is a toggle (press again to cancel).
+  delivered sensor. Boost is a toggle (press again to cancel); cancelling sends
+  the off through the normal command path, then backs off. Only a real on↔off
+  flip counts as foreign: a relay coming back from `unavailable`/`unknown` (every
+  restart for Z2M/MQTT) is a *recovery* — no override, no boost cancel, and
+  ownership is kept unless it recovers to `off`. An unavailable entity is never
+  commanded, an identical unconfirmed command is re-sent at most every
+  `COMMAND_RESEND_S`, and the low-temp floor latches until `temp_min +
+  TEMP_FLOOR_HYSTERESIS`. The floor is checked before a plan error, so a dead
+  price feed doesn't disable it.
 - **Coexist (top-up) loads** (`coexist`): the integration only ever switches the
   load *on*, and only switches *off* a run it started itself — it never turns off
   an externally-started run (a comfort automation, a manual flip). Lets it add
@@ -89,7 +111,8 @@ solar entity ─┘ solar_source + baseline → excess ───┤
   is **persisted**, so a restart mid-run doesn't disown it — an in-memory-only
   flag left such a load on forever. So does slow confirmation: a command counts
   as ours until the entity actually moves (`_claim_pending`), not for a few
-  seconds. When a coexist load *is* left on unowned outside every period for
+  seconds. Ownership is released only once the off is *observed*, so a failed
+  turn_off is retried rather than disowned. When a coexist load *is* left on unowned outside every period for
   `UNOWNED_RUN_HOURS`, the `unowned_run` repair says so, because nothing else
   will ever switch it off.
 - **Solar excess** = forecast PV − baseline; allocated to loads highest-priority
@@ -113,8 +136,12 @@ solar entity ─┘ solar_source + baseline → excess ───┤
   a long dwell. Without a predicted sensor it falls back to a reactive deadband on
   the accumulated current-interval net (negative = export): add when exporting
   past the threshold and the live sell price is below its gate, shed when
-  importing. An explicit stop (manual off / boost
-  cancel) backs off so divert can't immediately re-grab the load. A diverted load
+  importing. Ineligible (disabled / overridden) loads are pruned first, and if
+  the governing sensor (predicted, else live net) goes unavailable the diverted
+  set is released to the plan. Divert respects each load's `min_run` (no shed
+  before it) and `min_off` (no engage too soon after an off). An explicit stop
+  (manual off / boost cancel) backs off so divert can't immediately re-grab the
+  load. A diverted load
   that is on but idle (element satisfied, e.g. a full tank) is **left powered**,
   not switched off: it draws nothing, so the live export still flows to the other
   loads, and it resumes drawing on its own thermostat (shed last, as the highest

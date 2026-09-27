@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
 from homeassistant.config_entries import ConfigSubentryData
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Context, HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
+    async_fire_time_changed,
     async_mock_service,
 )
 
@@ -170,3 +172,169 @@ async def test_running_sensor_reflects_controlled_entity(hass: HomeAssistant) ->
     hass.states.async_set("input_boolean.floor", "on")
     await hass.async_block_till_done()
     assert hass.states.get(bs_id).state == "on"
+
+
+@pytest.mark.parametrize("coexist", [False, True])
+async def test_cancel_boost_switches_our_run_off(hass: HomeAssistant, coexist: bool) -> None:
+    # B1: cancelling a boost used to only back off — the override then blocked
+    # every reconcile, so a normal load ran through the grace and a coexist one
+    # (disowned at the same time) ran forever.
+    on = async_mock_service(hass, "homeassistant", "turn_on")
+    off = async_mock_service(hass, "homeassistant", "turn_off")
+    entity = "input_boolean.floor"
+    entry = await _setup(
+        hass,
+        {
+            "name": "Floor",
+            "mode": "non_sequential",
+            "target_minutes": 30,
+            "controlled_entity": entity,
+            "coexist": coexist,
+        },
+        cheap=(20, 21),  # nothing scheduled now: the run is the boost's
+        controlled_state="off",
+    )
+    subentry_id = next(iter(entry.subentries))
+    coordinator = entry.runtime_data
+    button_id = er.async_get(hass).async_get_entity_id("button", DOMAIN, f"{subentry_id}_boost")
+    await hass.services.async_call("button", "press", {"entity_id": button_id}, blocking=True)
+    await hass.async_block_till_done()
+    assert _called_for(on, entity)
+    hass.states.async_set(entity, "on")  # the relay confirms
+    await hass.async_block_till_done()
+    assert coordinator.runtime[subentry_id].driven is True
+
+    await hass.services.async_call("button", "press", {"entity_id": button_id}, blocking=True)
+    await hass.async_block_till_done()
+
+    assert _called_for(off, entity)
+    assert coordinator.runtime[subentry_id].boost_until is None
+    assert coordinator.actuator._override_active(subentry_id) is True  # no re-grab
+    # Ours until the off is seen; then released, and the echo isn't "manual".
+    hass.states.async_set(entity, "off")
+    await hass.async_block_till_done()
+    assert coordinator.runtime[subentry_id].driven is False
+    assert coordinator.foreign_log.get(subentry_id, []) == []
+
+
+async def test_cancel_boost_leaves_an_external_coexist_run_alone(hass: HomeAssistant) -> None:
+    # Boosting a coexist load somebody else already has on takes no ownership,
+    # so cancelling it must not cut that external run short either.
+    async_mock_service(hass, "homeassistant", "turn_on")
+    off = async_mock_service(hass, "homeassistant", "turn_off")
+    entity = "input_boolean.floor"
+    entry = await _setup(
+        hass,
+        {
+            "name": "Floor",
+            "mode": "non_sequential",
+            "target_minutes": 30,
+            "controlled_entity": entity,
+            "coexist": True,
+        },
+        cheap=(20, 21),
+        controlled_state="on",  # an external comfort run
+    )
+    subentry_id = next(iter(entry.subentries))
+    button_id = er.async_get(hass).async_get_entity_id("button", DOMAIN, f"{subentry_id}_boost")
+    await hass.services.async_call("button", "press", {"entity_id": button_id}, blocking=True)
+    await hass.async_block_till_done()
+    await hass.services.async_call("button", "press", {"entity_id": button_id}, blocking=True)
+    await hass.async_block_till_done()
+
+    assert not _called_for(off, entity)
+    assert entry.runtime_data.runtime[subentry_id].driven is False
+
+
+@pytest.mark.parametrize("coexist", [False, True])
+async def test_cancel_boost_retries_a_lost_off_until_observed(
+    hass: HomeAssistant, freezer, coexist: bool
+) -> None:
+    # P2: the cancel's back-off made every reconcile "don't touch", so a lost
+    # turn_off was never retried and the cancelled run kept going. The stop
+    # request holds the load off and re-sends until the off is seen.
+    async_mock_service(hass, "homeassistant", "turn_on")
+    off = async_mock_service(hass, "homeassistant", "turn_off")
+    entity = "input_boolean.floor"
+    entry = await _setup(
+        hass,
+        {
+            "name": "Floor",
+            "mode": "non_sequential",
+            "target_minutes": 30,
+            "controlled_entity": entity,
+            "coexist": coexist,
+        },
+        cheap=(20, 21),
+        controlled_state="off",
+    )
+    subentry_id = next(iter(entry.subentries))
+    coordinator = entry.runtime_data
+    actuator = coordinator.actuator
+    button_id = er.async_get(hass).async_get_entity_id("button", DOMAIN, f"{subentry_id}_boost")
+    await hass.services.async_call("button", "press", {"entity_id": button_id}, blocking=True)
+    await hass.async_block_till_done()
+    hass.states.async_set(entity, "on")
+    await hass.async_block_till_done()
+
+    await hass.services.async_call("button", "press", {"entity_id": button_id}, blocking=True)
+    await hass.async_block_till_done()
+    sent = [c for c in off if c.data.get("entity_id") == entity]
+    assert len(sent) == 1
+    assert actuator.diagnostics(subentry_id)["stop_requested"] is not None
+
+    # The relay never follows. The off is retried at the resend pace, even
+    # though the override grace is running.
+    for expected in (2, 3):
+        freezer.tick(timedelta(seconds=61))
+        async_fire_time_changed(hass, dt_util.utcnow())
+        await hass.async_block_till_done()
+        assert len([c for c in off if c.data.get("entity_id") == entity]) == expected
+
+    hass.states.async_set(entity, "off")  # finally lands
+    await hass.async_block_till_done()
+    assert actuator.diagnostics(subentry_id)["stop_requested"] is None
+    assert coordinator.runtime[subentry_id].driven is False
+    assert coordinator.foreign_log.get(subentry_id, []) == []
+    # ...and the normal back-off now runs from the observed off.
+    until = actuator._override_until[subentry_id]
+    assert (until - dt_util.utcnow()).total_seconds() > 590
+
+
+async def test_stop_request_expires_and_yields_to_a_manual_on(hass: HomeAssistant, freezer) -> None:
+    async_mock_service(hass, "homeassistant", "turn_on")
+    async_mock_service(hass, "homeassistant", "turn_off")
+    entity = "input_boolean.floor"
+    entry = await _setup(
+        hass,
+        {
+            "name": "Floor",
+            "mode": "non_sequential",
+            "target_minutes": 30,
+            "controlled_entity": entity,
+        },
+        cheap=(20, 21),
+        controlled_state="on",  # non-coexist and on: the stop is ours to make
+    )
+    subentry_id = next(iter(entry.subentries))
+    actuator = entry.runtime_data.actuator
+    cfg = entry.runtime_data.load_config(subentry_id)
+    hass.states.async_set(entity, "off")  # the setup reconcile's off lands
+    await hass.async_block_till_done()
+    hass.states.async_set(entity, "on", context=Context(user_id="u1"))
+    await hass.async_block_till_done()
+
+    await actuator.async_manual_stop(subentry_id)
+    assert actuator._desired_on(subentry_id, cfg) is False  # outranks the grace
+    # A relay that never confirms isn't held forever.
+    freezer.tick(timedelta(seconds=901))
+    actuator._desired_on(subentry_id, cfg)
+    assert actuator.diagnostics(subentry_id)["stop_requested"] is None
+
+    # A genuine manual on supersedes a stop request.
+    hass.states.async_set(entity, "off", context=Context(user_id="u1"))
+    await hass.async_block_till_done()
+    actuator._stop_requested[subentry_id] = dt_util.utcnow()
+    hass.states.async_set(entity, "on", context=Context(user_id="u1"))
+    await hass.async_block_till_done()
+    assert actuator.diagnostics(subentry_id)["stop_requested"] is None

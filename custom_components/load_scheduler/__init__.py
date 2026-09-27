@@ -18,6 +18,7 @@ from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.service import async_extract_referenced_entity_ids
 
 from .actuation import LoadActuator
 from .const import (
@@ -35,10 +36,11 @@ _LOGGER = logging.getLogger(__name__)
 _CARD_FILE = "load-scheduler-card.js"
 _CARD_URL = f"/{DOMAIN}/{_CARD_FILE}"
 
-_BOOST_SCHEMA = vol.Schema(
+# Every target field the UI's target selector can produce (entity, device, area,
+# floor, label) — services.yaml declares a `target:`, so the action editor offers
+# them all, and a hand-rolled device/entity-only schema rejected the rest.
+_BOOST_SCHEMA = cv.make_entity_service_schema(
     {
-        vol.Optional(ATTR_DEVICE_ID): vol.All(cv.ensure_list, [cv.string]),
-        vol.Optional(ATTR_ENTITY_ID): cv.entity_ids,
         vol.Optional(ATTR_MINUTES): vol.All(
             vol.Coerce(float), vol.Range(min=BOOST_MIN_MINUTES, max=BOOST_MAX_MINUTES)
         ),
@@ -141,8 +143,10 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
         _LOGGER.debug("Load Scheduler card not registered: %s", err)
 
 
-def _resolve_load(hass: HomeAssistant, device_id: str) -> tuple[LoadSchedulerCoordinator, str]:
-    """Map a targeted device to its coordinator + subentry id.
+def _load_for_device(
+    hass: HomeAssistant, device_id: str
+) -> tuple[LoadSchedulerCoordinator, str] | None:
+    """Map a device to its coordinator + subentry id, or None if it isn't a load.
 
     One load subentry owns exactly one device, identified as
     ``(DOMAIN, subentry_id)`` (see ``entity.LoadSchedulerEntity``), so the
@@ -163,34 +167,68 @@ def _resolve_load(hass: HomeAssistant, device_id: str) -> tuple[LoadSchedulerCoo
             coordinator = getattr(entry, "runtime_data", None)
             if coordinator is not None:
                 return coordinator, subentry_id
-    raise ServiceValidationError(
-        f"Device {device_id} is not a Load Scheduler load (or its hub is not loaded)"
-    )
+    return None
 
 
-def _targeted_devices(hass: HomeAssistant, call: ServiceCall) -> list[str]:
-    """The device ids a call targets, folding entity targets onto their device."""
-    device_ids = set(call.data.get(ATTR_DEVICE_ID, []))
+def _resolve_load(hass: HomeAssistant, device_id: str) -> tuple[LoadSchedulerCoordinator, str]:
+    """Like `_load_for_device`, but a device that isn't a loaded load is an error."""
+    load = _load_for_device(hass, device_id)
+    if load is None:
+        raise ServiceValidationError(
+            f"Device {device_id} is not a Load Scheduler load (or its hub is not loaded)"
+        )
+    return load
+
+
+def _targeted_loads(
+    hass: HomeAssistant, call: ServiceCall
+) -> list[tuple[LoadSchedulerCoordinator, str]]:
+    """Every load a call targets, deduplicated, validated before anything acts.
+
+    Explicitly named devices and entities must be loads — naming a foreign one
+    is a mistake worth an error. Area/floor/label targets are broader by nature
+    (a room holds lamps too), so what they pull in that isn't a load is skipped;
+    they only fail the call if they match no load at all.
+    """
+    selected = async_extract_referenced_entity_ids(hass, call)
+    # Either field may also be the "all"/"none" match keyword rather than a list.
+    devices, entities = call.data.get(ATTR_DEVICE_ID), call.data.get(ATTR_ENTITY_ID)
+    explicit_devices = set(devices) if isinstance(devices, list) else set()
+    explicit_entities = set(entities) if isinstance(entities, list) else set()
     registry = er.async_get(hass)
-    for entity_id in call.data.get(ATTR_ENTITY_ID, []):
+
+    device_ids: dict[str, bool] = {}  # device id → explicitly named
+    for device_id in selected.referenced_devices:
+        device_ids[device_id] = device_ids.get(device_id, False) or device_id in explicit_devices
+    for entity_id in selected.referenced | selected.indirectly_referenced:
+        explicit = entity_id in explicit_entities
         entry = registry.async_get(entity_id)
         if entry is None or entry.device_id is None:
-            raise ServiceValidationError(f"{entity_id} does not belong to a Load Scheduler load")
-        device_ids.add(entry.device_id)
-    if not device_ids:
+            if explicit:
+                raise ServiceValidationError(
+                    f"{entity_id} does not belong to a Load Scheduler load"
+                )
+            continue
+        device_ids[entry.device_id] = device_ids.get(entry.device_id, False) or explicit
+
+    loads: dict[tuple[str, str], tuple[LoadSchedulerCoordinator, str]] = {}
+    for device_id, explicit in sorted(device_ids.items()):
+        load = _resolve_load(hass, device_id) if explicit else _load_for_device(hass, device_id)
+        if load is not None:
+            coordinator, subentry_id = load
+            loads[(coordinator.config_entry.entry_id, subentry_id)] = load
+    if not loads:
         raise ServiceValidationError("No Load Scheduler load was targeted")
-    return sorted(device_ids)
+    return list(loads.values())
 
 
 async def _async_boost_service(call: ServiceCall) -> None:
     """Handle ``load_scheduler.boost``."""
     minutes = call.data.get(ATTR_MINUTES)
     # Resolve every target before acting, so a call naming one bad device does
-    # not boost half the others first.
-    targets = [
-        _resolve_load(call.hass, device_id) for device_id in _targeted_devices(call.hass, call)
-    ]
-    for coordinator, subentry_id in targets:
+    # not boost half the others first. A load named twice (its device and one of
+    # its entities) is boosted once.
+    for coordinator, subentry_id in _targeted_loads(call.hass, call):
         run = minutes
         if run is None:
             # Same default as the boost button: the load's own target runtime.

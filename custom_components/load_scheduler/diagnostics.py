@@ -49,6 +49,15 @@ async def async_get_config_entry_diagnostics(
                 # if a coexist load will ever be switched off again.
                 "driven": rt.driven,
             },
+            # The actuator's live view: what divert holds on, which back-off
+            # is running, the command still awaiting its echo, run/gap stamps
+            # and the safety-floor latch — the state that decides the next
+            # switch action but lives only in memory.
+            "actuator": (
+                coordinator.actuator.diagnostics(subentry_id)
+                if coordinator.actuator is not None
+                else None
+            ),
             "plan": None
             if plan is None
             else {

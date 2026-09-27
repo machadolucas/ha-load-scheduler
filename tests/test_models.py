@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from custom_components.load_scheduler.engine import ScheduleMode
 from custom_components.load_scheduler.models import LoadConfig, build_load_params
@@ -133,3 +134,56 @@ def test_min_service_by_absent_once_the_floor_is_delivered():
     now = datetime(2026, 1, 15, 20, 0, tzinfo=UTC)
     params = build_load_params(cfg, now, target_minutes=60, delivered_minutes=30)
     assert params.min_service_by is None
+
+
+def test_multi_run_sequential_subtracts_delivered_from_the_total():
+    # 2 x 30: one finished run must leave the second one plannable, not shrink
+    # every block to zero.
+    cfg = LoadConfig.from_subentry({"name": "X", "mode": "sequential", "runs_per_day": 2})
+    now = datetime(2026, 1, 15, 20, 0, tzinfo=UTC)
+    params = build_load_params(cfg, now, target_minutes=30, delivered_minutes=30)
+    assert params.target_minutes == 30  # 2 x 30 - 30
+    assert params.run_minutes == 30
+
+
+def test_single_run_and_non_sequential_keep_the_plain_target():
+    now = datetime(2026, 1, 15, 20, 0, tzinfo=UTC)
+    for data, run_minutes in (
+        ({"name": "X", "runs_per_day": 2}, None),  # runs_per_day is sequential-only
+        ({"name": "X", "mode": "sequential"}, 30),  # the run length pins a running cycle
+    ):
+        params = build_load_params(
+            LoadConfig.from_subentry(data), now, target_minutes=30, delivered_minutes=10
+        )
+        assert params.target_minutes == 20
+        assert params.run_minutes == run_minutes
+
+
+def test_running_minutes_reach_the_engine_only_inside_the_window():
+    now = datetime(2026, 1, 15, 20, 0, tzinfo=UTC)
+    open_now = LoadConfig.from_subentry({"name": "X", "horizon_hours": 24})
+    assert build_load_params(open_now, now, 60, running_minutes=12).running_minutes == 12
+    # Window opens at 21:00: the plan can't continue a run that is on at 20:00.
+    later = LoadConfig.from_subentry({"name": "X", "earliest": "21:00:00", "deadline": "07:00:00"})
+    assert build_load_params(later, now, 60, running_minutes=12).running_minutes == 0
+
+
+def test_stopped_minutes_are_measured_to_the_window_start():
+    now = datetime(2026, 1, 15, 20, 0, tzinfo=UTC)
+    open_now = LoadConfig.from_subentry({"name": "X", "horizon_hours": 24})
+    assert build_load_params(open_now, now, 60, stopped_minutes=5).stopped_minutes == 5
+    later = LoadConfig.from_subentry({"name": "X", "earliest": "21:00:00", "deadline": "07:00:00"})
+    assert build_load_params(later, now, 60, stopped_minutes=5).stopped_minutes == 65
+    # A running load has no stop to keep a distance from.
+    assert (
+        build_load_params(open_now, now, 60, running_minutes=3, stopped_minutes=5).stopped_minutes
+        is None
+    )
+
+
+def test_horizon_is_real_hours_across_dst():
+    helsinki = ZoneInfo("Europe/Helsinki")
+    cfg = LoadConfig.from_subentry({"name": "X", "horizon_hours": 24})
+    now = datetime(2026, 10, 24, 12, 0, tzinfo=helsinki)  # the 25h day follows
+    start, end = build_load_params(cfg, now, target_minutes=60).window
+    assert end.astimezone(UTC) - start.astimezone(UTC) == timedelta(hours=24)

@@ -47,6 +47,10 @@ class LoadEnabledSwitch(LoadSchedulerEntity, SwitchEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self.coordinator.async_set_enabled(self._subentry_id, True)
+        # Runtime is the source of truth: publish it without waiting for the
+        # (debounced) refresh, so a quick toggle back isn't lost.
+        self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self.coordinator.async_set_enabled(self._subentry_id, False)
+        self.async_write_ha_state()

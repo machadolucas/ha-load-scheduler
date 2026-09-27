@@ -77,6 +77,15 @@ async def test_schedule_sensor_active_and_heating(hass: HomeAssistant) -> None:
     await hass.async_block_till_done()
     assert hass.states.get(sid).attributes["heating"] is True
 
+    # The same draw from a kW-reporting sensor is still heating (1.5 kW is not
+    # "1.5 W, below the 50 W idle threshold").
+    hass.states.async_set("sensor.heater_power", "1.5", {"unit_of_measurement": "kW"})
+    await hass.async_block_till_done()
+    assert hass.states.get(sid).attributes["heating"] is True
+    hass.states.async_set("sensor.heater_power", "0.02", {"unit_of_measurement": "kW"})
+    await hass.async_block_till_done()
+    assert hass.states.get(sid).attributes["heating"] is False
+
 
 async def test_schedule_sensor_rationale_attributes(hass: HomeAssistant) -> None:
     """The diagnostic card's data: targets math + a static config summary."""

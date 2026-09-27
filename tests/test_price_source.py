@@ -217,3 +217,69 @@ def test_normalises_to_utc_across_dst_spring_forward():
     assert all(s.start.utcoffset() == timedelta(0) for s in slots)  # all UTC now
     gaps = [b.start - a.start for a, b in zip(slots, slots[1:], strict=False)]
     assert all(g == timedelta(minutes=15) for g in gaps)
+
+
+# --------------------------------------------------------------------------- #
+# robustness: malformed items, ordering, units, mixed-resolution sell
+# --------------------------------------------------------------------------- #
+
+
+def test_null_and_malformed_items_are_skipped_not_fatal():
+    # Nord Pool publishes raw_tomorrow with null values before the auction; one
+    # bad item must not throw away the whole (valid) forecast.
+    t0 = datetime(2026, 5, 28, 0, 0, tzinfo=UTC)
+    raw_today = [
+        {"start": t0.isoformat(), "end": (t0 + timedelta(hours=1)).isoformat(), "value": 0.1},
+        {"start": "not-a-date", "value": 0.2},
+        {"start": (t0 + timedelta(hours=1)).isoformat(), "value": None},
+        {"value": 0.3},  # no start at all
+        "garbage",
+    ]
+    slots = ps.normalize({"raw_today": raw_today, "raw_tomorrow": [{"start": None, "value": None}]})
+    assert [(s.start, s.buy) for s in slots] == [(t0, 0.1)]
+
+
+def test_all_items_unusable_raises_format_error():
+    t0 = datetime(2026, 5, 28, 0, 0, tzinfo=UTC)
+    with pytest.raises(ps.PriceFormatError):
+        ps.normalize({"prices": [{"start": t0.isoformat(), "price": None}]})
+
+
+def test_unordered_items_infer_ends_after_sorting():
+    t0 = datetime(2026, 5, 28, 0, 0, tzinfo=UTC)
+    order = [15, 0, 30]
+    items = [{"start": (t0 + timedelta(minutes=m)).isoformat(), "price": 0.1} for m in order]
+    slots = ps.normalize({"prices": items})
+    assert [s.start for s in slots] == [t0 + timedelta(minutes=m) for m in (0, 15, 30)]
+    assert all(s.end - s.start == timedelta(minutes=15) for s in slots)
+
+
+def test_cent_denominated_key_is_scaled_to_eur():
+    t0 = datetime(2026, 5, 28, 0, 0, tzinfo=UTC)
+    items = [{"start": t0.isoformat(), "price_ct_per_kwh": 12.5}]
+    assert ps.normalize({"prices": items})[0].buy == pytest.approx(0.125)
+
+
+def test_merge_sell_hourly_sell_covers_quarter_hour_buy():
+    t0 = datetime(2026, 5, 28, 0, 0, tzinfo=UTC)
+    buy = [
+        ps.ForecastSlot(t0 + timedelta(minutes=15 * i), t0 + timedelta(minutes=15 * (i + 1)), 0.2)
+        for i in range(5)
+    ]
+    sell = [ps.ForecastSlot(t0, t0 + timedelta(hours=1), 0.03)]
+    merged = ps.merge_sell(buy, sell)
+    assert [s.sell for s in merged] == [0.03, 0.03, 0.03, 0.03, None]
+
+
+def test_null_price_leaves_a_gap_instead_of_stretching_the_previous_slot():
+    t0 = datetime(2026, 5, 28, 0, 0, tzinfo=UTC)
+    items = [
+        {"start": t0.isoformat(), "price": 0.01},
+        {"start": (t0 + timedelta(minutes=15)).isoformat(), "price": None},
+        {"start": (t0 + timedelta(minutes=30)).isoformat(), "price": 0.50},
+    ]
+    slots = ps.normalize({"prices": items})
+    assert [(s.start, s.end) for s in slots] == [
+        (t0, t0 + timedelta(minutes=15)),
+        (t0 + timedelta(minutes=30), t0 + timedelta(minutes=45)),
+    ]

@@ -89,41 +89,87 @@ function dotClass(a) {
   return "off";
 }
 
+// Only ever used inside HTML templates, so an unknown currency code (config
+// text) is escaped here once rather than at every one of its call sites.
 function currencySymbol(hass) {
   const c = hass && hass.config && hass.config.currency;
-  return CURRENCY_SYMBOL[c] || (c ? `${c} ` : "");
+  return CURRENCY_SYMBOL[c] || (c ? `${esc(c)} ` : "");
+}
+
+// Every string that comes from hass or the card config (names, states, entity
+// ids, titles) goes through this before it lands in an innerHTML template — a
+// friendly_name is user-editable text, not markup. Covers both text and
+// quoted-attribute positions. Numbers we format ourselves don't need it.
+const HTML_ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+function esc(v) {
+  return String(v == null ? "" : v).replace(/[&<>"']/g, (ch) => HTML_ESCAPES[ch]);
+}
+
+// Mirror of the backend's `units.power_to_watts`: `feedback_idle_w` is in watts
+// but plenty of power sensors report kW, and 1.5 (kW) read as watts is "idle".
+// Case matters (mW vs MW); a missing or unknown unit is taken as watts.
+const POWER_FACTORS = { mW: 1e-3, W: 1, kW: 1e3, MW: 1e6, GW: 1e9 };
+function powerToWatts(value, unit) {
+  if (unit == null) return value;
+  const f = POWER_FACTORS[String(unit).trim()];
+  return value * (f === undefined ? 1 : f);
+}
+
+// `hass.entities` (the entity registry) is replaced only when the registry
+// changes, whereas `set hass` fires on every state change — so anything derived
+// purely from it is cached against the object itself.
+const _registryIndex = new WeakMap();
+function registryIndex(entities) {
+  let idx = _registryIndex.get(entities);
+  if (idx) return idx;
+  // keyed: schedule sensors confirmed by translation_key. unkeyed: our sensors
+  // without one (older HA), which still need the per-call state check below.
+  const keyed = [];
+  const unkeyed = [];
+  // device_id → sibling controls. One pass, last-wins, like the old per-call scan.
+  const controls = new Map();
+  for (const id of Object.keys(entities)) {
+    const e = entities[id];
+    if (!e) continue;
+    if (e.platform === "load_scheduler" && id.startsWith("sensor.")) {
+      if (e.translation_key) {
+        if (e.translation_key === "schedule") keyed.push(id);
+      } else unkeyed.push(id);
+    }
+    if (e.device_id && e.entity_id) {
+      let out = controls.get(e.device_id);
+      if (!out) controls.set(e.device_id, (out = { enabled: null, boost: null, target: null }));
+      const dom = e.entity_id.split(".")[0];
+      if (dom === "switch") out.enabled = e.entity_id;
+      else if (dom === "button") out.boost = e.entity_id;
+      else if (dom === "number") out.target = e.entity_id;
+    }
+  }
+  idx = { keyed, unkeyed, controls };
+  _registryIndex.set(entities, idx);
+  return idx;
 }
 
 // All the integration's per-load `…_schedule` sensors, for the optional default
 // when `entities` is omitted (and for the editor's stub config).
 function discoverScheduleEntities(hass) {
   if (!hass || !hass.entities) return [];
-  return Object.keys(hass.entities)
-    .filter((id) => {
-      const e = hass.entities[id];
-      if (!e || e.platform !== "load_scheduler" || !id.startsWith("sensor.")) return false;
-      if (e.translation_key) return e.translation_key === "schedule";
-      const st = hass.states[id];
-      return !!(st && st.attributes && Array.isArray(st.attributes.periods));
-    })
-    .sort();
+  const { keyed, unkeyed } = registryIndex(hass.entities);
+  const found = unkeyed.filter((id) => {
+    const st = hass.states && hass.states[id];
+    return !!(st && st.attributes && Array.isArray(st.attributes.periods));
+  });
+  return keyed.concat(found).sort();
 }
 
 // The sibling control entities (switch/button/number) of a load, found via the
 // shared device of its schedule sensor. One of each per load device.
 function loadControls(hass, scheduleEntityId) {
-  const out = { enabled: null, boost: null, target: null };
   const reg = hass && hass.entities && hass.entities[scheduleEntityId];
   const deviceId = reg && reg.device_id;
-  if (!deviceId) return out;
-  for (const e of Object.values(hass.entities)) {
-    if (e.device_id !== deviceId) continue;
-    const dom = e.entity_id.split(".")[0];
-    if (dom === "switch") out.enabled = e.entity_id;
-    else if (dom === "button") out.boost = e.entity_id;
-    else if (dom === "number") out.target = e.entity_id;
-  }
-  return out;
+  const found = deviceId && registryIndex(hass.entities).controls.get(deviceId);
+  // A copy, so a caller can't corrupt the shared cache.
+  return found ? { ...found } : { enabled: null, boost: null, target: null };
 }
 
 // Minutes left on an active boost, read from the schedule sensor's
@@ -287,6 +333,9 @@ class LoadSchedulerCard extends HTMLElement {
   // can start from an empty config without throwing.
   setConfig(config) {
     this._config = config || {};
+    // Stringified once here, not on every `set hass` in _signature.
+    this._configJson = JSON.stringify(this._config);
+    this._sig = null;
     this._selected = null; // entity id whose schedule the shared panel shows
     this._timer = null; // auto-collapse handle for the detail panel
   }
@@ -340,7 +389,7 @@ class LoadSchedulerCard extends HTMLElement {
         const unit = ts.attributes.unit_of_measurement || "";
         const num = parseFloat(ts.state);
         if (unit === "min" || unit === "minutes") return num > 0 ? fmtDuration(num) : "—";
-        return `${ts.state}${unit ? " " + unit : ""}`;
+        return esc(`${ts.state}${unit ? " " + unit : ""}`);
       }
     }
     const t = a.target_minutes || 0;
@@ -362,7 +411,7 @@ class LoadSchedulerCard extends HTMLElement {
     if (toggleable) {
       toggle =
         `<span class="toggle ${isOn ? "on" : "off"}" data-action="toggle" ` +
-        `data-entity="${entityId}" data-on="${isOn}" role="button" ` +
+        `data-entity="${esc(entityId)}" data-on="${isOn}" role="button" ` +
         `title="${isOn ? "on" : "off"} · tap to turn ${isOn ? "off" : "on"}" ` +
         `aria-label="${isOn ? "Turn off" : "Turn on"}">${POWER_SVG}</span>`;
     }
@@ -374,13 +423,13 @@ class LoadSchedulerCard extends HTMLElement {
       )}</span></div>`;
     } else if (!toggleable) {
       // Not an on/off entity (e.g. unavailable, or a plain sensor): show state.
-      body = `<div class="line"><span class="lv muted">${state}</span></div>`;
+      body = `<div class="line"><span class="lv muted">${esc(state)}</span></div>`;
     }
     return `<ha-card class="tile basic${
       selected ? " selected" : ""
-    }" data-tile="${entityId}"><div class="ti">
+    }" data-tile="${esc(entityId)}"><div class="ti">
       <div class="top">
-        <span class="name">${name}</span>
+        <span class="name">${esc(name)}</span>
         ${toggle}
       </div>
       ${body}
@@ -410,7 +459,9 @@ class LoadSchedulerCard extends HTMLElement {
       tip += ` · ~${Math.round(ta.showers_left)} showers left`;
     }
     if (ta.calibrated === false) tip += " (calibrating…)";
-    return `<div class="tank" data-action="more-info" data-entity="${item.tank_charge}" title="${tip}">
+    return `<div class="tank" data-action="more-info" data-entity="${esc(
+      item.tank_charge,
+    )}" title="${esc(tip)}">
       <div class="bar"><div class="fill${charging ? " charging" : ""}" style="width:${pct.toFixed(
         0,
       )}%; --tank-color:${color}"></div></div>
@@ -422,9 +473,9 @@ class LoadSchedulerCard extends HTMLElement {
     const entityId = item.entity;
     const st = this._hass.states[entityId];
     if (!st)
-      return `<ha-card class="tile missing"><div class="ti">${
-        item.name || entityId
-      } (unavailable)</div></ha-card>`;
+      return `<ha-card class="tile missing"><div class="ti">${esc(
+        item.name || entityId,
+      )} (unavailable)</div></ha-card>`;
     const a = st.attributes || {};
     // Anything that isn't one of our schedule sensors → a basic switch tile.
     if (!(Array.isArray(a.periods) && a.config && a.config.mode)) {
@@ -442,7 +493,7 @@ class LoadSchedulerCard extends HTMLElement {
       const on = a.active === true;
       toggle =
         `<span class="toggle ${dc}" data-action="toggle" ` +
-        `data-entity="${controlled}" data-on="${on}" role="button" ` +
+        `data-entity="${esc(controlled)}" data-on="${on}" role="button" ` +
         `title="${DOT_LABEL[dc]} · tap to turn ${on ? "off" : "on"}" ` +
         `aria-label="${on ? "Turn off" : "Turn on"}">${POWER_SVG}</span>`;
     }
@@ -468,9 +519,9 @@ class LoadSchedulerCard extends HTMLElement {
 
     return `<ha-card class="tile${
       selected ? " selected" : ""
-    }" data-tile="${entityId}"><div class="ti">
+    }" data-tile="${esc(entityId)}"><div class="ti">
       <div class="top">
-        <span class="name">${name}</span>
+        <span class="name">${esc(name)}</span>
         ${toggle}
       </div>
       ${this._tankBar(item, a)}
@@ -520,7 +571,9 @@ class LoadSchedulerCard extends HTMLElement {
       : main;
     return `<ha-card class="detail"><div class="detail-body">
       <div class="detail-head">
-        <span class="detail-name" data-action="more-info" data-entity="${moreEntity}">${name} — ${
+        <span class="detail-name" data-action="more-info" data-entity="${esc(moreEntity)}">${esc(
+          name,
+        )} — ${
           isScheduler ? "schedule" : "activity"
         }</span>
         <span class="close" data-close="1">✕</span>
@@ -552,7 +605,7 @@ class LoadSchedulerCard extends HTMLElement {
     const cap = left ? `until ${fmtClock(a.boost_until)}` : fmtDuration(effective);
     return `<div class="detail-side">
       <span class="bbtn${left ? " active" : ""}" data-action="boost"
-        data-entity="${this._selected}" data-cancel="${ctl.boost}"
+        data-entity="${esc(this._selected)}" data-cancel="${esc(ctl.boost)}"
         data-minutes="${configured || ""}" data-on="${left ? "true" : "false"}"
         title="${left ? "Cancel the boost" : `Run now for ${fmtDuration(effective)}`}"
         >${BOLT_SVG}${label}</span>
@@ -584,7 +637,9 @@ class LoadSchedulerCard extends HTMLElement {
         const range = `${fmtClock(new Date(s.start).toISOString())} – ${fmtClock(
           new Date(s.end).toISOString(),
         )}`;
-        return `<span class="seg ${s.status}" style="flex:${dur}" data-status="${s.status}" data-range="${range}"></span>`;
+        return `<span class="seg ${s.status}" style="flex:${dur}" data-status="${s.status}" data-range="${esc(
+          range,
+        )}"></span>`;
       })
       .join("");
     // The tooltip is positioned/filled on hover or tap (see _showTip).
@@ -601,10 +656,15 @@ class LoadSchedulerCard extends HTMLElement {
     const c = a.config || {};
     if (Array.isArray(a.periods) && c.mode) {
       if (!c.controlled_entity) return null; // informational: nothing to chart
+      const fbSt = c.feedback_entity && this._hass.states[c.feedback_entity];
       return {
         controlled: c.controlled_entity,
         feedback: c.feedback_entity || null,
         idleW: Number(c.feedback_idle_w) || 0,
+        // History is fetched with no_attributes, so the unit comes from the
+        // live state; a sensor's unit doesn't change within the window.
+        feedbackUnit:
+          fbSt && fbSt.attributes ? fbSt.attributes.unit_of_measurement : undefined,
         mode: "scheduler",
       };
     }
@@ -678,27 +738,35 @@ class LoadSchedulerCard extends HTMLElement {
     if (fb) for (const e of fb) if (e.t > start && e.t < end) times.add(e.t);
     const sorted = [...times].sort((a, b) => a - b);
     sorted.push(end);
-    const valAt = (series, t) => {
+    // Value in force at t (the last sample with e.t <= t; null before the
+    // first). The boundaries are visited in ascending order, so each series
+    // keeps a cursor that only moves forward — O(n) overall instead of a
+    // rescan per boundary (a power sensor logs 10-20k points a day).
+    const stepper = (series) => {
+      let i = 0;
       let v = null;
-      for (const e of series) {
-        if (e.t <= t) v = e.state;
-        else break;
-      }
-      return v;
+      return (t) => {
+        while (i < series.length && series[i].t <= t) v = series[i++].state;
+        return v;
+      };
     };
+    const ctrlAt = stepper(ctrl);
+    const fbAt = fb ? stepper(fb) : null;
     const segs = [];
     for (let i = 0; i < sorted.length - 1; i++) {
       const t0 = sorted[i];
       const t1 = sorted[i + 1];
       if (t1 <= t0) continue;
-      const on = valAt(ctrl, t0) === "on";
+      const on = ctrlAt(t0) === "on";
       let status;
       if (!on) status = "off";
       else if (info.mode === "basic") status = "on";
       else if (fb) {
-        const v = valAt(fb, t0);
+        const v = fbAt(t0);
         const p = parseFloat(v);
-        if (!isNaN(p)) status = p >= info.idleW ? "heating" : "idle";
+        if (!isNaN(p)) {
+          status = powerToWatts(p, info.feedbackUnit) >= info.idleW ? "heating" : "idle";
+        }
         else if (v === "on" || v === "heating") status = "heating";
         else if (v === "off") status = "idle";
         // Dead feedback (unavailable/unknown/no sample yet) degrades to the
@@ -816,9 +884,10 @@ class LoadSchedulerCard extends HTMLElement {
     const tip = wrap && wrap.querySelector(".tltip");
     if (!tip) return;
     const status = seg.dataset.status;
+    // dataset hands back the *decoded* attribute, so it is raw text again here.
     tip.innerHTML =
-      `<span class="tipst"><span class="tipdot ${status}"></span>${status}</span>` +
-      `${seg.dataset.range}`;
+      `<span class="tipst"><span class="tipdot ${esc(status)}"></span>${esc(status)}</span>` +
+      `${esc(seg.dataset.range)}`;
     const wr = wrap.getBoundingClientRect();
     const sr = seg.getBoundingClientRect();
     const x = (clientX != null ? clientX : sr.left + sr.width / 2) - wr.left;
@@ -846,11 +915,7 @@ class LoadSchedulerCard extends HTMLElement {
   // DOM mid-hover/click (flicker + missed clicks). We rebuild only when this
   // changes — plus a 1-minute bucket so relative times still tick.
   _signature() {
-    const parts = [
-      JSON.stringify(this._config),
-      this._selected || "",
-      Math.floor(Date.now() / 60000),
-    ];
+    const parts = [this._configJson, this._selected || "", Math.floor(Date.now() / 60000)];
     for (const it of this._entities()) {
       const st = this._hass.states[it.entity];
       if (!st) {
@@ -877,6 +942,18 @@ class LoadSchedulerCard extends HTMLElement {
           c.controlled_entity,
           c.mode,
           periods.map((p) => `${p.start}-${p.end}`).join(","),
+        ].join("|"),
+      );
+      // The tile's target reads the sibling `number` (value + unit) and the
+      // boost pill needs the device's button: both live outside the sensor.
+      const ctl = loadControls(this._hass, it.entity);
+      const ts = ctl.target && this._hass.states[ctl.target];
+      parts.push(
+        [
+          ctl.boost || "",
+          ctl.target || "",
+          ts ? ts.state : "",
+          ts && ts.attributes ? ts.attributes.unit_of_measurement : "",
         ].join("|"),
       );
       if (it.tank_charge) {
@@ -913,7 +990,7 @@ class LoadSchedulerCard extends HTMLElement {
     if (sig === this._sig) return; // nothing the card shows has changed
     this._sig = sig;
     const title = this._config.title
-      ? `<div class="title">${this._config.title}</div>`
+      ? `<div class="title">${esc(this._config.title)}</div>`
       : "";
     const entities = this._entities();
     const grid = entities.length
@@ -967,7 +1044,7 @@ function targetsHtml(a, sym) {
       `${fmtDuration(c.min_service_minutes)} (${fmtDuration(a.min_service_remaining)} left)`,
     ]);
   }
-  if (c.cap != null) pairs.push(["Price cap", `${sym}${c.cap}/kWh`]);
+  if (c.cap != null) pairs.push(["Price cap", `${sym}${esc(c.cap)}/kWh`]);
   pairs.push(["Scheduled", fmtDuration(a.scheduled_minutes)]);
   return kvGrid(pairs);
 }
@@ -975,21 +1052,23 @@ function targetsHtml(a, sym) {
 function configHtml(a) {
   const c = a.config || {};
   const solar = c.allow_solar ? (a.solar_enabled ? "yes · active" : "yes") : "no";
+  // kvGrid drops null/undefined, so only escape values that are present.
+  const e = (v) => (v == null ? v : esc(v));
   const pairs = [
-    ["Mode", MODE_LABEL[c.mode] || c.mode],
-    ["Priority", c.priority],
+    ["Mode", e(MODE_LABEL[c.mode] || c.mode)],
+    ["Priority", e(c.priority)],
     ["Solar", solar],
-    ["Window", fmtConfigWindow(c)],
-    ["Runs/day", c.runs_per_day],
+    ["Window", esc(fmtConfigWindow(c))],
+    ["Runs/day", e(c.runs_per_day)],
   ];
-  if (c.draw_kw) pairs.push(["Draw", `${c.draw_kw} kW`]);
+  if (c.draw_kw) pairs.push(["Draw", `${esc(c.draw_kw)} kW`]);
   if (c.coexist) pairs.push(["Top-up", "never forced off"]);
-  if (c.temp_entity) pairs.push(["Temp floor", `≥ ${c.temp_min}°`]);
+  if (c.temp_entity) pairs.push(["Temp floor", `≥ ${esc(c.temp_min)}°`]);
   const wires = [
-    c.controlled_entity && `controls ${c.controlled_entity}`,
-    c.feedback_entity && `feedback ${c.feedback_entity}`,
-    c.temp_entity && `temp ${c.temp_entity}`,
-    c.delivered_entity && `delivered ${c.delivered_entity}`,
+    c.controlled_entity && `controls ${esc(c.controlled_entity)}`,
+    c.feedback_entity && `feedback ${esc(c.feedback_entity)}`,
+    c.temp_entity && `temp ${esc(c.temp_entity)}`,
+    c.delivered_entity && `delivered ${esc(c.delivered_entity)}`,
   ].filter(Boolean);
   const wiring = wires.length ? `<div class="wiring">${wires.join(" · ")}</div>` : "";
   return kvGrid(pairs) + wiring;
@@ -1049,7 +1128,7 @@ function skipSentence(r, a, c, sym) {
     if (noTarget) {
       const triggers = [];
       if (c.allow_solar) triggers.push("solar surplus");
-      if (c.temp_entity) triggers.push(`the room dropping below ${c.temp_min}°`);
+      if (c.temp_entity) triggers.push(`the room dropping below ${esc(c.temp_min)}°`);
       const t = triggers.length ? triggers.join(" or ") : "a manual boost";
       return `No daily target — it only runs on ${t}. Neither applies right now, so it stays off.`;
     }
@@ -1062,13 +1141,22 @@ function skipSentence(r, a, c, sym) {
     return "Nothing scheduled: no price slots fall inside this load's time window yet.";
   }
   if (r.skip_reason === "all_above_cap") {
-    const cap = r.cap != null ? `${sym}${r.cap}/kWh` : "your";
+    const cap = r.cap != null ? `${sym}${esc(r.cap)}/kWh` : "your";
     const cheapest =
       r.cheapest_cost != null ? ` (cheapest is ${priceText(sym, r.cheapest_cost)})` : "";
     return `Nothing scheduled: every slot in the window is above your ${cap} price cap${cheapest}. It will wait for cheaper prices.`;
   }
   if (r.skip_reason === "no_contiguous_block") {
     return "Nothing scheduled: no cheap-enough continuous block long enough fits in the window.";
+  }
+  if (r.skip_reason === "below_min_run") {
+    // Not a price problem: what's left today is shorter than one legal run, and
+    // the engine won't start a run it would have to cut short.
+    const left =
+      (a.remaining_minutes || 0) > 0 ? `only ${fmtDuration(a.remaining_minutes)}` : "very little";
+    const minRun =
+      c.min_run_minutes > 0 ? `minimum run of ${fmtDuration(c.min_run_minutes)}` : "minimum run";
+    return `Nothing more scheduled today: ${left} of the target is left, which is shorter than this load's ${minRun}, so it won't start a run that short.`;
   }
   return "Nothing scheduled right now.";
 }
@@ -1105,7 +1193,7 @@ function scheduledSentence(r, a, c, sym) {
     c.mode === "sequential"
       ? `Booked the cheapest continuous ${fmtDuration(mins)}`
       : `Booked the cheapest ${fmtDuration(mins)}`;
-  if (r.cap != null) s += ` at or below your ${sym}${r.cap}/kWh cap`;
+  if (r.cap != null) s += ` at or below your ${sym}${esc(r.cap)}/kWh cap`;
   if (r.cheapest_cost != null) s += ` (cheapest ${priceText(sym, r.cheapest_cost)})`;
   if (a.est_cost) s += ` — about ${sym}${a.est_cost.toFixed(2)}`;
   parts.push(s + ".");
@@ -1185,13 +1273,41 @@ const DIAG_CSS = `
 class LoadSchedulerDiagnosticCard extends HTMLElement {
   setConfig(config) {
     this._config = config || {};
+    this._configJson = JSON.stringify(this._config);
     this._expanded = new Set();
+    this._sig = null;
     this._render();
   }
 
   set hass(hass) {
     this._hass = hass;
     this._render();
+  }
+
+  // Everything the rendered output depends on, as a flat list compared
+  // element-wise. HA calls `set hass` on *every* state change in the instance
+  // and rebuilding innerHTML each time flickers and eats clicks, so we rebuild
+  // only when one of these moves. HA replaces a state object when that entity
+  // changes and keeps the old reference otherwise, so references are compared
+  // directly. The minute bucket keeps relative times ("in 12m") ticking.
+  _signature() {
+    const hass = this._hass;
+    const parts = [
+      this._configJson,
+      [...this._expanded].sort().join("|"),
+      Math.floor(Date.now() / 60000),
+      hass.config && hass.config.currency,
+    ];
+    for (const it of this._entities()) {
+      parts.push(it.entity, it.name, hass.states[it.entity]);
+      // Sibling controls: which exist (registry membership) and their states
+      // (the target stepper shows the number's value + unit).
+      const ctl = loadControls(hass, it.entity);
+      for (const id of [ctl.enabled, ctl.boost, ctl.target]) {
+        parts.push(id, id ? hass.states[id] : null);
+      }
+    }
+    return parts;
   }
 
   _opt(key, dflt) {
@@ -1250,9 +1366,9 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
       const left = boostRemaining(a);
       const mins = parseFloat(this._opt("boost_minutes", 0));
       parts.push(
-        `<span class="btn${left ? " active" : ""}" data-action="boost" data-entity="${
-          entityId
-        }" data-cancel="${ctl.boost}" data-minutes="${mins > 0 ? mins : ""}" data-on="${
+        `<span class="btn${left ? " active" : ""}" data-action="boost" data-entity="${esc(
+          entityId,
+        )}" data-cancel="${esc(ctl.boost)}" data-minutes="${mins > 0 ? mins : ""}" data-on="${
           left ? "true" : "false"
         }">${left ? `Boosting · ${fmtDuration(left)} left` : "Boost"}</span>`,
       );
@@ -1260,7 +1376,9 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
     if (ctl.enabled) {
       const on = a.enabled !== false;
       parts.push(
-        `<span class="btn${on ? " on" : ""}" data-action="enable" data-entity="${ctl.enabled}" data-on="${on}">${
+        `<span class="btn${on ? " on" : ""}" data-action="enable" data-entity="${esc(
+          ctl.enabled,
+        )}" data-on="${on}">${
           on ? "Enabled" : "Disabled"
         }</span>`,
       );
@@ -1268,12 +1386,13 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
     if (ctl.target) {
       const st = this._hass.states[ctl.target];
       const unit = st && st.attributes.unit_of_measurement ? st.attributes.unit_of_measurement : "";
-      const val = st ? `${st.state}${unit}` : "—";
+      const val = st ? esc(`${st.state}${unit}`) : "—";
+      const target = esc(ctl.target);
       parts.push(
         `<span class="stepper">` +
-          `<span class="sbtn" data-action="target" data-entity="${ctl.target}" data-delta="-1">−</span>` +
+          `<span class="sbtn" data-action="target" data-entity="${target}" data-delta="-1">−</span>` +
           `<span class="sval">${val}</span>` +
-          `<span class="sbtn" data-action="target" data-entity="${ctl.target}" data-delta="1">+</span>` +
+          `<span class="sbtn" data-action="target" data-entity="${target}" data-delta="1">+</span>` +
           `</span>`,
       );
     }
@@ -1285,12 +1404,14 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
     const st = this._hass.states[entityId];
     if (!st) {
       const label = item.name || entityId;
-      return `<div class="panel missing${first ? " first" : ""}">${label} (unavailable)</div>`;
+      return `<div class="panel missing${first ? " first" : ""}">${esc(label)} (unavailable)</div>`;
     }
     const a = st.attributes || {};
     const c = a.config || {};
-    const name = item.name || (a.friendly_name || entityId).replace(/\s*schedule$/i, "");
-    const mode = MODE_LABEL[c.mode] || c.mode || "";
+    const name = esc(item.name || (a.friendly_name || entityId).replace(/\s*schedule$/i, ""));
+    const mode = esc(MODE_LABEL[c.mode] || c.mode || "");
+    const when = esc(whenText(st, a)); // may carry a raw status string from hass
+    const eid = esc(entityId);
     const compact = this._opt("compact", false);
     const expanded = this._expanded.has(entityId);
     const narrative = this._opt("show_rationale", true)
@@ -1303,11 +1424,11 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
         ? `<div class="cbody">${narrative}${this._sections(entityId, a, sym)}</div>`
         : "";
       return `<div class="panel${first ? " first" : ""}">
-        <div class="row${expanded ? " expanded" : ""}" data-entity="${entityId}">
+        <div class="row${expanded ? " expanded" : ""}" data-entity="${eid}">
           <span class="dot ${dotClass(a)}"></span>
           <span class="name">${name}</span>
           <span class="badge-mode">${mode}</span>
-          <span class="when">${whenText(st, a)}</span>
+          <span class="when">${when}</span>
           <span class="chev">›</span>
         </div>${body}</div>`;
     }
@@ -1317,9 +1438,9 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
         <span class="dot ${dotClass(a)}"></span>
         <span class="name">${name}</span>
         <span class="badge-mode">${mode}</span>
-        <span class="when">${whenText(st, a)}</span>
+        <span class="when">${when}</span>
       </div>`;
-    const toggle = `<div class="row details-toggle${expanded ? " expanded" : ""}" data-entity="${entityId}">
+    const toggle = `<div class="row details-toggle${expanded ? " expanded" : ""}" data-entity="${eid}">
         <span class="lbl">Details</span><span class="chev">›</span>
       </div>`;
     const details = expanded ? this._sections(entityId, a, sym) : "";
@@ -1382,9 +1503,15 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
       this.appendChild(this._card);
       this._card.addEventListener("click", (e) => this._onClick(e));
     }
+    const sig = this._signature();
+    const prev = this._sig;
+    if (prev && prev.length === sig.length && prev.every((v, i) => v === sig[i])) return;
+    this._sig = sig;
     const sym = currencySymbol(this._hass);
     const entities = this._entities();
-    const title = this._config.title ? `<div class="title">${this._config.title}</div>` : "";
+    const title = this._config.title
+      ? `<div class="title">${esc(this._config.title)}</div>`
+      : "";
     const body = entities.length
       ? entities.map((e, i) => this._panel(e, sym, i === 0)).join("")
       : `<div class="hint">No Load Scheduler schedule sensors found — pick them in the card editor.</div>`;
@@ -1679,8 +1806,8 @@ class LoadSchedulerCardEditorBase extends HTMLElement {
     const info = document.createElement("div");
     info.style.cssText = "flex:1 1 auto;min-width:0;overflow:hidden;";
     info.innerHTML =
-      `<div style="font-size:0.9em;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${friendly}</div>` +
-      `<div style="font-size:0.72em;color:var(--secondary-text-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${item.entity}</div>`;
+      `<div style="font-size:0.9em;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(friendly)}</div>` +
+      `<div style="font-size:0.72em;color:var(--secondary-text-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(item.entity)}</div>`;
     head.appendChild(info);
     head.appendChild(this._miniButton("↑", "Move up", i === 0, () => this._move(i, -1)));
     head.appendChild(

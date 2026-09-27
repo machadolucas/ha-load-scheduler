@@ -40,6 +40,7 @@ calendar-bus + solar-divert automations on the author's home server (the
 | `models.py` | Subentry config → `LoadConfig` → `LoadParams` (target conversion, dynamic remaining) | no |
 | `rationale.py` | **Pure** decision facts (skip reason, cap-qualifying slots, solar coverage) the diagnostic card narrates | no |
 | `divert.py` | **Pure** real-time divert decision: predicted interval-net + load-aware engage/shed, priority-preserving | no |
+| `units.py` | **Pure** `power_to_watts`: feedback sensors in kW/W vs the W `feedback_idle_w` threshold (sensor, coordinator, card) | no |
 | `competing.py` | **Pure** competing-controller verdict: burst / same-local-time recurrence over a decaying 7-day log of foreign flips | no |
 | `coordinator.py` | Read sources, allocate solar by priority, run engine per load, statistics baseline, repairs, failsafe | yes |
 | `actuation.py` | Resolve desired state + drive controlled entities, real-time divert, restart catch-up | yes |
@@ -68,8 +69,12 @@ calendar-bus + solar-divert automations on the author's home server (the
   past-the-deadline slot is only budgeted for its in-window minutes.
 - Contiguous runs come from `_best_block`, which scans by **real minutes** and
   weights cost by minutes taken — the forecast mixes 15-min and hourly slots.
-- `min_run_minutes` is enforced during selection (`_plan_runs` buys whole runs),
-  not by deleting short fragments afterwards.
+- `min_run_minutes` (and `min_off_minutes`) are enforced during selection
+  (`_plan_runs` buys whole runs on a `_Grid`), not by deleting short fragments
+  afterwards. A run in progress (`running_minutes`) is pinned until it has served
+  `min_run`; a sub-`min_run` tail is legal only when it extends a run.
+- The `cap` applies to sequential loads too; only min-service minutes are
+  cap-exempt. `runs_per_day > 1` plans against the day's total (runs × target).
 
 ## Control & safety model (do not regress)
 
@@ -95,8 +100,12 @@ foreign-context change backs off for a grace period) → **low-temp safety floor
 (`divert.py`: predicted interval-close net, sell-gated, priority-preserving,
 load-aware engage so a load only starts if its own draw still leaves the interval
 in export — the highest-priority load that *fits* wins, falling through past bigger
-ones; already-on loads aren't candidates — asymmetric shed/engage dwell; reactive accumulated-net deadband when no
-predicted sensor) → **off**. Floor-heating shed overlaps the existing
+ones; already-on loads aren't candidates — asymmetric shed/engage dwell, plus each
+load's own min_run/min_off; reactive accumulated-net deadband when no
+predicted sensor) → **off**. Only a real on↔off flip is a manual change; recovery
+from `unavailable`/`unknown` is not. Ownership (`driven`) is held until an off is
+*observed* (a failed turn_off is retried, throttled by `COMMAND_RESEND_S`), and
+the low-temp floor is checked before a plan error and latches with hysteresis. Floor-heating shed overlaps the existing
 `price_hold_multi_level` system — don't let two controllers drive the same switch.
 
 ## Dev workflow

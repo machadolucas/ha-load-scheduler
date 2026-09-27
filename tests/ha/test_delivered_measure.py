@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from homeassistant.config_entries import ConfigSubentryData
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
@@ -150,3 +151,32 @@ async def test_delivered_targets_live_feedback_used_directly(hass: HomeAssistant
     coordinator = entry.runtime_data
     targets = coordinator._delivered_targets()
     assert targets == [(subentry_id, "sensor.heater_power", 50)]
+
+
+async def test_delivered_targets_scale_threshold_to_a_kw_feedback_sensor(
+    hass: HomeAssistant,
+) -> None:
+    """A kW feedback sensor gets its W threshold expressed in kW (50 W → 0.05)."""
+    async_mock_service(hass, "homeassistant", "turn_on")
+    async_mock_service(hass, "homeassistant", "turn_off")
+    hass.states.async_set("sensor.prices", "ok", {"data_today": [], "data_tomorrow": []})
+    hass.states.async_set("switch.heater", "on")
+    hass.states.async_set("sensor.heater_power", "1.5", {"unit_of_measurement": "kW"})
+    entry = _hub_entry(
+        hass,
+        {
+            "name": "Heater",
+            "mode": "non_sequential",
+            "target_minutes": 60,
+            "controlled_entity": "switch.heater",
+            "feedback_entity": "sensor.heater_power",
+            "feedback_idle_w": 50,
+        },
+    )
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    subentry_id = next(iter(entry.subentries))
+    [(sid, entity, threshold)] = entry.runtime_data._delivered_targets()
+    assert (sid, entity) == (subentry_id, "sensor.heater_power")
+    assert threshold == pytest.approx(0.05)

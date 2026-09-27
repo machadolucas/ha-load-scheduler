@@ -125,3 +125,21 @@ def test_state_only_boost_flag():
     r = rat.state_only(ScheduleMode.SEQUENTIAL, None, boost=True)
     assert r.boost is True
     assert r.skip_reason is None
+
+
+def test_remainder_below_min_run_is_not_blamed_on_the_cap():
+    slots = make_slots([0.05, 0.05, 0.05])
+    p = params(slots, target_minutes=10.0, min_run_minutes=30.0, cap=0.10)
+    periods = engine.compute_plan(slots, p)
+    assert periods == []
+    r = rat.explain(slots, p, periods, now=NOW)
+    assert r.skip_reason == rat.SKIP_BELOW_MIN_RUN
+
+
+def test_floor_below_min_run_still_schedules():
+    # With a floor outstanding the engine rounds up to one legal run instead.
+    slots = make_slots([0.05, 0.05, 0.05])
+    p = params(slots, target_minutes=10.0, min_service_minutes=10.0, min_run_minutes=30.0)
+    periods = engine.compute_plan(slots, p)
+    assert sum(x.minutes for x in periods) == 30.0
+    assert rat.explain(slots, p, periods, now=NOW).skip_reason is None

@@ -136,3 +136,22 @@ async def test_target_persists_across_reload(hass: HomeAssistant) -> None:
 
     number_id = reg.async_get_entity_id("number", DOMAIN, f"{subentry_id}_target")
     assert float(hass.states.get(number_id).state) == 45
+
+
+async def test_target_number_shows_every_click_within_the_refresh_debounce(
+    hass: HomeAssistant,
+) -> None:
+    # The refresh after a set is debounced; the runtime (source of truth) is
+    # published at once, so a second click inside the cooldown isn't lost.
+    entry = await _setup(
+        hass,
+        {"name": "Heater", "mode": "non_sequential", "target_minutes": 30},
+        cheap=(0, 1),
+    )
+    subentry_id = next(iter(entry.subentries))
+    number_id = er.async_get(hass).async_get_entity_id("number", DOMAIN, f"{subentry_id}_target")
+    for value in (45, 60):
+        await hass.services.async_call(
+            "number", "set_value", {"entity_id": number_id, "value": value}, blocking=True
+        )
+    assert float(hass.states.get(number_id).state) == 60
