@@ -18,7 +18,7 @@ from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.service import async_extract_referenced_entity_ids
+from homeassistant.helpers import target as target_helpers
 
 from .actuation import LoadActuator
 from .const import (
@@ -190,7 +190,12 @@ def _targeted_loads(
     (a room holds lamps too), so what they pull in that isn't a load is skipped;
     they only fail the call if they match no load at all.
     """
-    selected = async_extract_referenced_entity_ids(hass, call)
+    # The target helper (the service-call one was removed in HA 2026.8). Its
+    # selection class was renamed TargetSelectorData → TargetSelection.
+    selection_cls = getattr(target_helpers, "TargetSelection", None) or getattr(  # noqa: B009
+        target_helpers, "TargetSelectorData"
+    )
+    selected = target_helpers.async_extract_referenced_entity_ids(hass, selection_cls(call.data))
     # Either field may also be the "all"/"none" match keyword rather than a list.
     devices, entities = call.data.get(ATTR_DEVICE_ID), call.data.get(ATTR_ENTITY_ID)
     explicit_devices = set(devices) if isinstance(devices, list) else set()
