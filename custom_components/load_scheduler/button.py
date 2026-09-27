@@ -42,7 +42,7 @@ class LoadBoostButton(LoadSchedulerEntity, ButtonEntity):
         super().__init__(coordinator, subentry_id, subentry, "boost")
 
     async def async_press(self) -> None:
-        rt = self.coordinator.runtime[self._subentry_id]
+        rt = self.coordinator.runtime_for(self._subentry_id)
         if rt.boost_until is not None and dt_util.utcnow() < rt.boost_until:
             # Cancelling a boost is an explicit "stop now": back off first so the
             # divert/plan don't re-grab the load on the next tick, then clear it.

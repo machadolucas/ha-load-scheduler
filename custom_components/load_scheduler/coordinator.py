@@ -192,10 +192,25 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
 
     def _init_runtime(self) -> None:
         """Seed runtime state from each load subentry's stored config."""
-        for subentry_id, subentry in self.config_entry.subentries.items():
-            if subentry_id not in self.runtime:
-                cfg = LoadConfig.from_subentry(subentry.data)
-                self.runtime[subentry_id] = LoadRuntime(target_minutes=cfg.target_minutes)
+        for subentry_id in self.config_entry.subentries:
+            self.runtime_for(subentry_id)
+
+    def runtime_for(self, subentry_id: str) -> LoadRuntime:
+        """The load's runtime state, seeded from its config on first sight.
+
+        ``config_entry.subentries`` is live, so a load can appear after the
+        refresh seeded runtime but before its per-load loop reaches it: two
+        subentries added back to back, the second landing while the reload the
+        first triggered is awaiting the recorder. Indexing ``self.runtime``
+        directly then raised ``KeyError`` and failed the whole refresh, which put
+        the hub (every load) into setup-retry. Seeding a default keeps every load
+        scheduled; ``async_setup_entry`` reloads if the load set changed under it.
+        """
+        rt = self.runtime.get(subentry_id)
+        if rt is None:
+            cfg = LoadConfig.from_subentry(self.config_entry.subentries[subentry_id].data)
+            rt = self.runtime[subentry_id] = LoadRuntime(target_minutes=cfg.target_minutes)
+        return rt
 
     async def async_load_runtime(self) -> None:
         """Restore per-load runtime (target/enabled) from the Store at setup."""
@@ -444,25 +459,25 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
 
     async def async_set_target(self, subentry_id: str, minutes: float) -> None:
         """Update a load's target, persist it, and recompute."""
-        self.runtime[subentry_id].target_minutes = minutes
+        self.runtime_for(subentry_id).target_minutes = minutes
         self._store.async_schedule_save(self._runtime_snapshot)
         await self.async_request_refresh()
 
     async def async_set_enabled(self, subentry_id: str, enabled: bool) -> None:
         """Enable/disable a load, persist it, and recompute."""
-        self.runtime[subentry_id].enabled = enabled
+        self.runtime_for(subentry_id).enabled = enabled
         self._store.async_schedule_save(self._runtime_snapshot)
         await self.async_request_refresh()
 
     async def async_boost(self, subentry_id: str, minutes: float) -> None:
         """Force a load to run now for ``minutes`` (overrides price + enable)."""
-        self.runtime[subentry_id].boost_until = dt_util.utcnow() + timedelta(minutes=minutes)
+        self.runtime_for(subentry_id).boost_until = dt_util.utcnow() + timedelta(minutes=minutes)
         self._store.async_schedule_save(self._runtime_snapshot)
         await self.async_request_refresh()
 
     async def async_cancel_boost(self, subentry_id: str) -> None:
         """Cancel an active boost, persist, and recompute."""
-        self.runtime[subentry_id].boost_until = None
+        self.runtime_for(subentry_id).boost_until = None
         self._store.async_schedule_save(self._runtime_snapshot)
         await self.async_request_refresh()
 
@@ -771,7 +786,7 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         plans: dict[str, LoadPlan] = {}
         for subentry_id, subentry in sorted(self.config_entry.subentries.items(), key=order_key):
             cfg = LoadConfig.from_subentry(subentry.data)
-            rt = self.runtime[subentry_id]
+            rt = self.runtime_for(subentry_id)
             solar = self._solar_enabled(cfg)
             # Measure delivered-today once and reuse it for both the plan math
             # and the rationale (it's what shrinks the target / min-service floor).

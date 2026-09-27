@@ -68,7 +68,7 @@ class LoadTargetNumber(LoadSchedulerEntity, NumberEntity):
 
     @property
     def native_value(self) -> float:
-        minutes = self.coordinator.runtime[self._subentry_id].target_minutes
+        minutes = self.coordinator.runtime_for(self._subentry_id).target_minutes
         if self._kwh:
             return round(minutes / 60.0 * self._draw, 2)
         return minutes

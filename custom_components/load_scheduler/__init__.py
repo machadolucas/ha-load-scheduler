@@ -194,7 +194,7 @@ async def _async_boost_service(call: ServiceCall) -> None:
         run = minutes
         if run is None:
             # Same default as the boost button: the load's own target runtime.
-            rt = coordinator.runtime[subentry_id]
+            rt = coordinator.runtime_for(subentry_id)
             run = rt.target_minutes if rt.target_minutes > 0 else DEFAULT_BOOST_MINUTES
         await coordinator.async_boost(subentry_id, run)
 
@@ -214,6 +214,11 @@ def _async_register_services(hass: HomeAssistant) -> None:
 
 async def async_setup_entry(hass: HomeAssistant, entry: LoadSchedulerConfigEntry) -> bool:
     """Set up Load Scheduler from the hub config entry."""
+    # Loads present when setup starts. Setup awaits a lot before it registers the
+    # reload listener below, so a subentry added or removed in that window never
+    # triggers a reload. One landing while the platforms are being set up would
+    # be missed by some of them (see the check at the end).
+    loads_at_start = set(entry.subentries)
     coordinator = LoadSchedulerCoordinator(hass, entry)
     await coordinator.async_load_runtime()
     await coordinator.async_refresh_baseline()
@@ -233,6 +238,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: LoadSchedulerConfigEntry
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
+    if set(entry.subentries) != loads_at_start:
+        # A load was added/removed mid-setup, before the listener existed:
+        # reload once so its entities are created (or torn down).
+        hass.config_entries.async_schedule_reload(entry.entry_id)
     return True
 
 

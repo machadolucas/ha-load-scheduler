@@ -337,7 +337,7 @@ class LoadActuator:
     def _eligible_for_divert(self, sid: str, cfg: LoadConfig) -> bool:
         if cfg.is_informational or not cfg.controlled_entity or not cfg.allow_solar:
             return False
-        if not self._coordinator.runtime[sid].enabled:
+        if not self._coordinator.runtime_for(sid).enabled:
             return False
         return not self._override_active(sid)
 

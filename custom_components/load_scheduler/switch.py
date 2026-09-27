@@ -43,7 +43,7 @@ class LoadEnabledSwitch(LoadSchedulerEntity, SwitchEntity):
 
     @property
     def is_on(self) -> bool:
-        return self.coordinator.runtime[self._subentry_id].enabled
+        return self.coordinator.runtime_for(self._subentry_id).enabled
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self.coordinator.async_set_enabled(self._subentry_id, True)
