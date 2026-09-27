@@ -1,4 +1,4 @@
-# CLAUDE.md — Load Scheduler
+# Agent notes (CLAUDE.md = AGENTS.md) — Load Scheduler
 
 Working notes for AI agents and future-me. Read this before changing code.
 
