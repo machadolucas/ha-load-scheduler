@@ -14,8 +14,10 @@ A Home Assistant custom integration (`load_scheduler`) that schedules flexible
 loads (water heater, dishwasher, EV, floor heating) into the cheapest/greenest
 times from a price forecast. It replaces a pile of template-sensor +
 calendar-bus + solar-divert automations on the author's home server (the
-`macserver` repo). Design rationale lives in the approved plan at
-`~/.claude/plans/structured-beaming-pixel.md` (the *why*); this file is the *how*.
+`macserver` repo). The design rationale (the *why*) lives in
+`docs/architecture.md` — its "Key contracts" section — and in the commit/release
+history; this file is the *how*. (The original approved plan,
+`structured-beaming-pixel.md`, was a local planning file and is no longer kept.)
 
 ## Architecture
 
