@@ -94,7 +94,8 @@ foreign-context change backs off for a grace period) → **low-temp safety floor
 → **scheduled plan** (cheap/solar/min-service/boost) → **real-time divert**
 (`divert.py`: predicted interval-close net, sell-gated, priority-preserving,
 load-aware engage so a load only starts if its own draw still leaves the interval
-in export, asymmetric shed/engage dwell; reactive accumulated-net deadband when no
+in export — the highest-priority load that *fits* wins, falling through past bigger
+ones; already-on loads aren't candidates — asymmetric shed/engage dwell; reactive accumulated-net deadband when no
 predicted sensor) → **off**. Floor-heating shed overlaps the existing
 `price_hold_multi_level` system — don't let two controllers drive the same switch.
 

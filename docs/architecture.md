@@ -98,10 +98,14 @@ solar entity ─┘ solar_source + baseline → excess ───┤
   end-of-interval net** sensor configured (accumulated-so-far + live power
   extrapolated over the minutes left), it drives both engage and shed off that
   projection so it acts *before* an import happens — the right signal for 15-min
-  net metering. Engagement is **load-aware**: the highest-priority eligible load
-  is added only if its own projected draw for the rest of the interval still
-  leaves the interval closing in export (by `net_export_threshold`), so it never
-  turns on a load too big for the remaining surplus; shed drops the
+  net metering. Engagement is **load-aware**: candidates are tried in descending
+  priority and the first whose own projected draw for the rest of the interval
+  still leaves the interval closing in export (by `net_export_threshold`) is
+  added, so it never turns on a load too big for the remaining surplus, and a
+  big high-priority load that doesn't fit falls through to a smaller
+  lower-priority one that does. Loads whose controlled entity is already on (by
+  plan, safety floor or a coexist run) aren't candidates — their draw is already
+  in the net; shed drops the
   lowest-priority load once the interval is projected to import. Dwell is
   **asymmetric** — slow to engage (`DIVERT_ENGAGE_DWELL_S`), quick to shed
   (`DIVERT_SHED_DWELL_S`) — and the gap between the engage/shed thresholds is a

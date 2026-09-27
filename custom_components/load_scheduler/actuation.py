@@ -341,6 +341,17 @@ class LoadActuator:
             return False
         return not self._override_active(sid)
 
+    def _controlled_is_on(self, cfg: LoadConfig) -> bool:
+        """Is the load's controlled entity already on (plan, floor, coexist run)?
+
+        Such a load's draw is already in the live/predicted net, so offering it
+        as a divert candidate would count that draw twice — and, with its full
+        projected draw, a big on-by-plan load at high priority would block every
+        lower-priority load from engaging.
+        """
+        state = self._hass.states.get(cfg.controlled_entity)
+        return state is not None and state.state == "on"
+
     @callback
     def _update_divert(self) -> None:
         """Fill/drain the diverted set as live export surplus swings.
@@ -402,7 +413,7 @@ class LoadActuator:
             if sid in self._diverted:
                 continue
             cfg = self._coordinator.load_config(sid)
-            if not self._eligible_for_divert(sid, cfg):
+            if not self._eligible_for_divert(sid, cfg) or self._controlled_is_on(cfg):
                 continue
             candidates.append(
                 DivertCandidate(
@@ -445,12 +456,13 @@ class LoadActuator:
             return self._coordinator.load_config(sid).priority
 
         if exporting and sell_ok:
-            candidates = [
-                sid
-                for sid in self._coordinator.config_entry.subentries
-                if sid not in self._diverted
-                and self._eligible_for_divert(sid, self._coordinator.load_config(sid))
-            ]
+            candidates = []
+            for sid in self._coordinator.config_entry.subentries:
+                if sid in self._diverted:
+                    continue
+                cfg = self._coordinator.load_config(sid)
+                if self._eligible_for_divert(sid, cfg) and not self._controlled_is_on(cfg):
+                    candidates.append(sid)
             if candidates:
                 self._diverted.add(max(candidates, key=priority))
                 self._last_divert_change = now

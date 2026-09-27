@@ -133,3 +133,57 @@ def test_dwell_blocks_engage_but_allows_shed() -> None:
 def test_no_action_when_nothing_eligible() -> None:
     assert _decide(predicted_net=-0.9) == divert.DivertDecision()
     assert _decide(predicted_net=0.5) == divert.DivertDecision()
+
+
+def test_falls_through_to_lower_priority_that_fits() -> None:
+    # The real case: garage heater (1.5 kW, priority 10) and takkahuone floor
+    # (1.1 kW, priority 5), 10 min left => 0.25 / ~0.18 kWh. A ~1.3 kW surplus
+    # (-0.32 kWh) can't take the heater (-0.07 > -0.1 buffer) but fits the floor.
+    decision = _decide(
+        predicted_net=-0.32,
+        candidates=[
+            DivertCandidate("garage", priority=10, projected_energy=0.25),
+            DivertCandidate("floor", priority=5, projected_energy=0.18),
+        ],
+    )
+    assert decision.add == "floor"
+    assert decision.remove is None
+
+
+def test_prefers_highest_priority_among_fitting() -> None:
+    # Everything but the top-priority load fits; of those, the highest priority
+    # wins regardless of list order or size.
+    decision = _decide(
+        predicted_net=-0.6,
+        candidates=[
+            DivertCandidate("small_low", priority=1, projected_energy=0.1),
+            DivertCandidate("too_big", priority=9, projected_energy=0.8),
+            DivertCandidate("mid", priority=6, projected_energy=0.4),
+            DivertCandidate("small_mid", priority=3, projected_energy=0.1),
+        ],
+    )
+    assert decision.add == "mid"
+
+
+def test_equal_priority_keeps_caller_order() -> None:
+    # Tie-break is the caller's (subentry) order, as with the old ``max``.
+    decision = _decide(
+        predicted_net=-0.6,
+        candidates=[
+            DivertCandidate("first", priority=5, projected_energy=0.1),
+            DivertCandidate("second", priority=5, projected_energy=0.1),
+        ],
+    )
+    assert decision.add == "first"
+
+
+def test_no_engage_when_none_fit() -> None:
+    decision = _decide(
+        predicted_net=-0.3,
+        candidates=[
+            DivertCandidate("a", priority=9, projected_energy=0.5),
+            DivertCandidate("b", priority=5, projected_energy=0.25),
+            DivertCandidate("c", priority=1, projected_energy=0.21),
+        ],
+    )
+    assert decision == divert.DivertDecision()

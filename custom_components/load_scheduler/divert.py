@@ -15,8 +15,12 @@ Two ideas keep it from leaking a trickle of import every interval:
 
 * **Load-aware engagement.** A candidate is only switched on if its *own*
   projected consumption for the rest of the interval still leaves the interval
-  closing in export. Engaging by priority alone — the old behaviour — would turn
-  on a load too big for the remaining surplus and tip the interval into import.
+  closing in export. Candidates are tried in descending priority and the first
+  one that fits is engaged, so a big high-priority load that doesn't fit falls
+  through to a smaller, lower-priority one that does (a 1.1 kW surplus runs a
+  1.1 kW floor rather than idling because a 1.5 kW heater outranks it). Engaging
+  by priority alone — the old behaviour — would turn on a load too big for the
+  remaining surplus and tip the interval into import.
 * **Hysteresis.** Engaging needs the projection to stay below ``-engage_buffer``;
   shedding triggers once it reaches ``+shed_margin``. The gap between them is a
   hold band, so the set doesn't flip-flop around break-even (which would also
@@ -24,7 +28,8 @@ Two ideas keep it from leaking a trickle of import every interval:
 
 At most one load is added or removed per call (mirroring the actuator's
 one-at-a-time, dwell-gated behaviour). Priority is preserved: the
-highest-priority eligible load is engaged first and shed last.
+highest-priority load that fits is engaged first, and the lowest-priority
+diverted load is shed first.
 """
 
 from __future__ import annotations
@@ -74,9 +79,12 @@ def decide_divert(
     if (not sell_ok or predicted_net >= shed_margin) and diverted and can_shed:
         return DivertDecision(remove=min(diverted, key=lambda d: d[1])[0])
     # Otherwise add the highest-priority candidate whose own projected draw still
-    # leaves the interval closing in export by at least ``engage_buffer``.
-    if sell_ok and can_engage and candidates:
-        best = max(candidates, key=lambda c: c.priority)
-        if predicted_net + best.projected_energy <= -engage_buffer:
-            return DivertDecision(add=best.sid)
+    # leaves the interval closing in export by at least ``engage_buffer``. A
+    # candidate that doesn't fit must not block smaller, lower-priority ones
+    # behind it. ``sorted`` is stable, so equal priorities keep the caller's
+    # order — the same tie-break the old ``max`` had.
+    if sell_ok and can_engage:
+        for cand in sorted(candidates, key=lambda c: c.priority, reverse=True):
+            if predicted_net + cand.projected_energy <= -engage_buffer:
+                return DivertDecision(add=cand.sid)
     return DivertDecision()

@@ -116,3 +116,61 @@ async def test_fast_shed_when_interval_flips_to_import(hass: HomeAssistant, free
     hass.states.async_set("sensor.pred", "0.3", {"unit_of_measurement": "kWh"})
     await hass.async_block_till_done()
     assert sid not in actuator._diverted
+
+
+async def test_already_on_load_is_not_a_divert_candidate(hass: HomeAssistant, freezer) -> None:
+    # A high-priority load that is already on (e.g. running from its plan) has its
+    # draw in the predicted net already. Offering it as a candidate would count
+    # that draw twice and — being top priority — take the one engage slot, so the
+    # lower-priority floor would never get the surplus. It must be skipped.
+    freezer.move_to("2026-06-17T12:05:00+00:00")  # 10 min left => 1 kW = 0.167 kWh
+    async_mock_service(hass, "homeassistant", "turn_on")
+    async_mock_service(hass, "homeassistant", "turn_off")
+    hass.states.async_set("sensor.prices", "ok", _PRICES)
+    hass.states.async_set("sensor.net", "-0.3", {"unit_of_measurement": "kWh"})
+    hass.states.async_set("sensor.pred", "-0.7", {"unit_of_measurement": "kWh"})
+    hass.states.async_set("sensor.sell", "0.01", {"unit_of_measurement": "EUR/kWh"})
+    hass.states.async_set("input_boolean.lvv", "on")
+    hass.states.async_set("input_boolean.floor", "off")
+
+    def _load(name: str, entity: str, priority: int) -> ConfigSubentryData:
+        return ConfigSubentryData(
+            subentry_type=SUBENTRY_TYPE_LOAD,
+            title=name,
+            unique_id=None,
+            data={
+                "name": name,
+                "mode": "non_sequential",
+                "target_minutes": 0,
+                "controlled_entity": entity,
+                "allow_solar": True,
+                "draw_kw": 1,
+                "priority": priority,
+            },
+        )
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            "name": "Hub",
+            "buy_price_entity": "sensor.prices",
+            "net_energy_entity": "sensor.net",
+            "predicted_net_energy_entity": "sensor.pred",
+            "live_sell_entity": "sensor.sell",
+            "net_export_threshold": 0.1,
+            "sell_threshold": 0.05,
+        },
+        unique_id="sensor.prices",
+        subentries_data=[
+            _load("LVV", "input_boolean.lvv", 60),
+            _load("Floor", "input_boolean.floor", 5),
+        ],
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    by_title = {sub.title: sid for sid, sub in entry.subentries.items()}
+    diverted = entry.runtime_data.actuator._diverted
+    assert by_title["Floor"] in diverted
+    assert by_title["LVV"] not in diverted
