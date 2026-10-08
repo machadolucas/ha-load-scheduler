@@ -160,7 +160,16 @@ def _load_for_device(
         else None
     )
     if subentry_id is not None:
-        for entry_id in device.config_entries:
+        # HA 2026.8+ gives a device exactly one config entry (`config_entry_id`);
+        # reading the old multi-entry `config_entries` set logs a deprecation
+        # warning from 2026.10 and stops working in 2027.10. Cores before 2026.8
+        # (hacs.json still allows 2025.9) only have the set.
+        entry_ids = (
+            [device.config_entry_id]
+            if hasattr(device, "config_entry_id")
+            else device.config_entries
+        )
+        for entry_id in entry_ids:
             entry = hass.config_entries.async_get_entry(entry_id)
             if entry is None or entry.domain != DOMAIN or subentry_id not in entry.subentries:
                 continue
