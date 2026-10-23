@@ -45,7 +45,7 @@ solar entity ─┘ solar_source + baseline → excess ───┤
 | `units.py` | Pure power-unit normalisation (`power_to_watts`) for feedback sensors vs the W idle threshold | no |
 | `competing.py` | Pure competing-controller verdict: burst / same-local-time recurrence over a decaying 7-day log of foreign flips | no |
 | `coordinator.py` | Read sources, allocate solar by priority, run engine per load, repairs, statistics baseline | yes |
-| `actuation.py` | Resolve desired state (override → safety → plan → divert), drive controlled entities, restart catch-up | yes |
+| `actuation.py` | Resolve desired state (override → safety → buy-price keep-on → plan → divert), drive controlled entities, restart catch-up | yes |
 | `persistence.py` | `Store` for runtime (target/enabled/boost) | yes |
 | `config_flow.py` | Hub flow + per-load subentry wizard (+ reconfigure) | yes |
 | `binary_sensor/sensor/number/switch/button/calendar` | Entities | yes |
@@ -90,7 +90,7 @@ solar entity ─┘ solar_source + baseline → excess ───┤
 - **Runtime state** (target / enabled / boost) lives in the `Store` (source of
   truth, in backups); entities are views/setters over it.
 - **Actuation precedence** (per tick): manual override → low-temp safety floor →
-  scheduled plan (incl. boost / min-service) → real-time divert → off. A manual
+  optional buy-price keep-on (enabled loads, current buy ≤ threshold) → scheduled plan (incl. boost / min-service) → real-time divert → off. A manual
   **off** stops the current run (cancels any boost, suppresses the rest of the
   active period); a manual **on** is left alone and credited via the measured
   delivered sensor. Boost is a toggle (press again to cancel); cancelling sends

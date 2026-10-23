@@ -13,12 +13,14 @@ The desired on/off for a load at any instant is resolved by precedence:
    must not leave a cold room unheated. Released with hysteresis
    (``TEMP_FLOOR_HYSTERESIS``) so a sensor hovering at the threshold doesn't
    flip the relay on every sample.
-3. **Scheduled plan** — the coordinator's periods (cheap/solar/min-service/boost).
-4. **Real-time solar divert** — when there's live export surplus and selling
+3. **Buy-price keep-on** — an enabled load stays powered at or below its optional
+   threshold, even outside its scheduling window or after meeting its target.
+4. **Scheduled plan** — the coordinator's periods (cheap/solar/min-service/boost).
+5. **Real-time solar divert** — when there's live export surplus and selling
    isn't worth it, surplus is dispatched to the highest-priority eligible loads.
-5. Otherwise **off**.
+6. Otherwise **off**.
 
-**Coexist (top-up) loads** never have step 5 force them off: the integration
+**Coexist (top-up) loads** never have step 6 force them off: the integration
 only switches such a load *off* if it was the one that switched it *on*. This
 lets it add cheap/green energy on top of an external control (e.g. floor-heating
 comfort automations) without ever fighting it — external on-runs are observed
@@ -68,6 +70,7 @@ from .competing import SOURCE_SCRIPTED, SOURCE_UNKNOWN, SOURCE_USER, ForeignEven
 from .const import (
     COMMAND_PENDING_S,
     COMMAND_RESEND_S,
+    CONF_BUY_PRICE_ENTITY,
     CONF_LIVE_SELL_ENTITY,
     CONF_NET_ENERGY_ENTITY,
     CONF_NET_EXPORT_THRESHOLD,
@@ -86,6 +89,7 @@ from .const import (
 from .coordinator import LoadSchedulerCoordinator
 from .divert import DivertCandidate, decide_divert
 from .models import LoadConfig
+from .price_source import keep_on_at_price
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -221,6 +225,11 @@ class LoadActuator:
 
     def _watched_entities(self) -> list[str]:
         watched: set[str] = set()
+        if any(
+            self._coordinator.load_config(sid).keep_on_price is not None
+            for sid in self._coordinator.config_entry.subentries
+        ):
+            watched.add(self._coordinator.config_entry.data[CONF_BUY_PRICE_ENTITY])
         if self._net_entity:
             watched.add(self._net_entity)
         if self._predicted_net_entity:
@@ -244,6 +253,8 @@ class LoadActuator:
         entity_id = event.data.get("entity_id")
         self._note_controlled_change(entity_id, event)
         self._evaluate("source change")
+        if entity_id == self._coordinator.config_entry.data[CONF_BUY_PRICE_ENTITY]:
+            self._schedule_next_boundary()
 
     @callback
     def _evaluate(self, _reason: str) -> None:
@@ -717,6 +728,14 @@ class LoadActuator:
         # room still means heat.
         if self._temp_floor(sid, cfg):
             return True
+        if (
+            cfg.keep_on_price is not None
+            and self._coordinator.runtime_for(sid).enabled
+            and keep_on_at_price(
+                self._coordinator.current_buy_price(dt_util.utcnow()), cfg.keep_on_price
+            )
+        ):
+            return True
         plan = (self._coordinator.data or {}).get(sid)
         if plan is None or plan.error:
             # No usable plan (a failsafe run is a plan without an error) and the
@@ -841,6 +860,18 @@ class LoadActuator:
             if t > now
         ]
         bounds.extend(t for t in self._override_until.values() if t > now)
+        # Price edges matter even with an empty plan (e.g. a zero-target floor
+        # heater). Do not leave yesterday's cheap override on until a refresh.
+        if any(
+            self._coordinator.load_config(sid).keep_on_price is not None
+            for sid in self._coordinator.config_entry.subentries
+        ):
+            bounds.extend(
+                t
+                for slot in self._coordinator.keep_on_price_slots()
+                for t in (slot.start, slot.end)
+                if t > now
+            )
         # An unconfirmed stop: wake to retry the off once the resend interval
         # has passed, and when the request expires.
         for sid, requested in self._stop_requested.items():

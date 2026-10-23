@@ -105,6 +105,52 @@ async def test_subentry_reconfigure_edits_load(hass: HomeAssistant) -> None:
     assert entry.subentries[subentry_id].data["target_minutes"] == 90
 
 
+async def test_load_flow_accepts_negative_keep_on_buy_price(hass: HomeAssistant) -> None:
+    entry = await _hub(hass)
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_LOAD), context={"source": SOURCE_USER}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], _load("Heater", keep_on_price=-0.025)
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    subentry_id = next(iter(entry.subentries))
+    assert entry.subentries[subentry_id].data["keep_on_price"] == -0.025
+
+
+async def test_load_flow_rejects_non_finite_keep_on_buy_price(hass: HomeAssistant) -> None:
+    entry = await _hub(hass)
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_TYPE_LOAD), context={"source": SOURCE_USER}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], _load("Heater", keep_on_price=float("nan"))
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"]["keep_on_price"] == "invalid_keep_on_price"
+
+
+async def test_subentry_reconfigure_can_clear_keep_on_price(hass: HomeAssistant) -> None:
+    entry = await _hub(
+        hass,
+        subentries_data=[
+            ConfigSubentryData(
+                subentry_type=SUBENTRY_TYPE_LOAD,
+                title="Heater",
+                unique_id=None,
+                data=_load("Heater", keep_on_price=0.03),
+            )
+        ],
+    )
+    subentry_id = next(iter(entry.subentries))
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry_id)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], _load("Heater")
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert "keep_on_price" not in entry.subentries[subentry_id].data
+
+
 async def test_hub_reconfigure_clearing_an_optional_source_removes_it(
     hass: HomeAssistant,
 ) -> None:

@@ -1045,6 +1045,7 @@ function targetsHtml(a, sym) {
     ]);
   }
   if (c.cap != null) pairs.push(["Price cap", `${sym}${esc(c.cap)}/kWh`]);
+  if (c.keep_on_price != null) pairs.push(["Keep on at buy price", `≤ ${sym}${esc(c.keep_on_price)}/kWh`]);
   pairs.push(["Scheduled", fmtDuration(a.scheduled_minutes)]);
   return kvGrid(pairs);
 }
@@ -1105,6 +1106,11 @@ function priceText(sym, v) {
 function rationaleText(a, sym) {
   const r = a.rationale;
   const c = a.config || {};
+  if (a.enabled && c.mode !== "informational" && c.controlled_entity &&
+      c.keep_on_price != null && a.current_buy_price != null &&
+      a.current_buy_price <= c.keep_on_price) {
+    return `The current buy price (${priceText(sym, a.current_buy_price)}) is at or below your keep-on threshold (${priceText(sym, c.keep_on_price)}). This keeps the load powered regardless of its schedule or daily target; manual overrides still take precedence. Its own thermostat can remain idle.`;
+  }
   if (!r) return "No scheduling rationale available yet.";
 
   if (r.boost && a.boost_until) {
@@ -1129,8 +1135,9 @@ function skipSentence(r, a, c, sym) {
       const triggers = [];
       if (c.allow_solar) triggers.push("solar surplus");
       if (c.temp_entity) triggers.push(`the room dropping below ${esc(c.temp_min)}°`);
+      if (c.keep_on_price != null) triggers.push(`a buy price at or below ${priceText(sym, c.keep_on_price)}`);
       const t = triggers.length ? triggers.join(" or ") : "a manual boost";
-      return `No daily target — it only runs on ${t}. Neither applies right now, so it stays off.`;
+      return `No daily target — it can run on ${t}. No target-based run is scheduled.`;
     }
     const done = fmtDuration(a.delivered_minutes || 0);
     return c.min_service_minutes

@@ -19,7 +19,7 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.util import dt as dt_util
 
-from .const import SUBENTRY_TYPE_LOAD
+from .const import CONF_BUY_PRICE_ENTITY, SUBENTRY_TYPE_LOAD
 from .coordinator import LoadSchedulerConfigEntry
 from .entity import LoadSchedulerEntity
 from .rationale import PlanRationale
@@ -139,6 +139,11 @@ class LoadScheduleSensor(LoadSchedulerEntity, SensorEntity):
             # the card can explain the rules without a second data source. Flat
             # and low-churn; excluded from the recorder via _unrecorded_attributes.
             "config": static["config"],
+            "current_buy_price": (
+                self.coordinator.current_buy_price(now)
+                if static["config"]["keep_on_price"] is not None
+                else None
+            ),
         }
 
     def _serialize_static(self, plan) -> dict:
@@ -160,6 +165,7 @@ class LoadScheduleSensor(LoadSchedulerEntity, SensorEntity):
                 "target_type": cfg.target_type,
                 "priority": cfg.priority,
                 "cap": cfg.cap,
+                "keep_on_price": cfg.keep_on_price,
                 "min_service_minutes": cfg.min_service_minutes,
                 "min_run_minutes": cfg.min_run_minutes,
                 "min_off_minutes": cfg.min_off_minutes,
@@ -205,6 +211,13 @@ class LoadScheduleSensor(LoadSchedulerEntity, SensorEntity):
 
     @callback
     def _state_changed(self, _event) -> None:
+        if (
+            _event.data.get("entity_id")
+            == self.coordinator.config_entry.data[CONF_BUY_PRICE_ENTITY]
+        ):
+            self._schedule_next_boundary()
+            self.async_write_ha_state()
+            return
         # Only the dot (controlled_on / heating) depends on these entities.
         if self._actual_state() != self._published_actual:
             self.async_write_ha_state()
@@ -225,6 +238,13 @@ class LoadScheduleSensor(LoadSchedulerEntity, SensorEntity):
         if not plan:
             return None
         bounds = [t for p in plan.periods for t in (p.start, p.end) if t > now]
+        if self.coordinator.load_config(self._subentry_id).keep_on_price is not None:
+            bounds.extend(
+                t
+                for slot in self.coordinator.keep_on_price_slots()
+                for t in (slot.start, slot.end)
+                if t > now
+            )
         return min(bounds) if bounds else None
 
     @callback
@@ -247,6 +267,8 @@ class LoadScheduleSensor(LoadSchedulerEntity, SensorEntity):
         self._schedule_next_boundary()
         cfg = self.coordinator.load_config(self._subentry_id)
         watch = [e for e in (cfg.controlled_entity, cfg.feedback_entity) if e]
+        if cfg.keep_on_price is not None:
+            watch.append(self.coordinator.config_entry.data[CONF_BUY_PRICE_ENTITY])
         if watch:
             self._unsub_state = async_track_state_change_event(
                 self.hass, watch, self._state_changed

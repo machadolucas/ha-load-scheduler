@@ -283,3 +283,40 @@ def test_null_price_leaves_a_gap_instead_of_stretching_the_previous_slot():
         (t0, t0 + timedelta(minutes=15)),
         (t0 + timedelta(minutes=30), t0 + timedelta(minutes=45)),
     ]
+
+
+@pytest.mark.parametrize(
+    ("buy", "threshold", "expected"),
+    [
+        (0.05, 0.05, True),
+        (0.049, 0.05, True),
+        (0.051, 0.05, False),
+        (0, 0, True),
+        (-0.02, -0.01, True),
+        (0, -0.01, False),
+        (0, None, False),
+        (None, 0.05, False),
+        (float("nan"), 0.05, False),
+        (float("-inf"), 0.05, False),
+        (0, float("inf"), False),
+        (0, float("nan"), False),
+    ],
+)
+def test_keep_on_price_is_optional_inclusive_and_finite(buy, threshold, expected):
+    assert ps.keep_on_at_price(buy, threshold) is expected
+
+
+def test_buy_price_at_uses_only_current_interval_not_sell_or_future():
+    now = datetime(2026, 10, 23, 12, tzinfo=UTC)
+    slots = [
+        ps.ForecastSlot(now, now + timedelta(minutes=15), 0.2, -0.1),
+        ps.ForecastSlot(now + timedelta(minutes=30), now + timedelta(hours=1), -0.1),
+    ]
+    assert ps.buy_price_at(slots, now) == 0.2
+    assert ps.buy_price_at(slots, now - timedelta(seconds=1)) is None
+    assert ps.buy_price_at(slots, now + timedelta(minutes=15)) is None
+    assert ps.buy_price_at(slots, now + timedelta(minutes=30)) == -0.1
+    assert ps.buy_price_at(slots, now + timedelta(hours=1)) is None
+    assert (
+        ps.buy_price_at([ps.ForecastSlot(now, now + timedelta(hours=1), float("nan"))], now) is None
+    )

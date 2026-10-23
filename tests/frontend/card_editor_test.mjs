@@ -532,5 +532,27 @@ console.log("diagnostic narration");
   check(!html.includes("Nothing scheduled right now."), "below_min_run doesn't fall through to the generic line");
 }
 
+{
+  const Diag = registry.get("load-scheduler-diagnostic-card");
+  const card = new Diag();
+  card.setConfig({ entities: ["sensor.floor_schedule"] });
+  const attrs = {
+    periods: [], enabled: true, target_minutes: 0, current_buy_price: 0,
+    rationale: { skip_reason: "already_satisfied" },
+    config: { mode: "non_sequential", controlled_entity: "switch.floor", keep_on_price: 0 },
+  };
+  const render = (extra = {}) => {
+    card.hass = { config: { currency: "EUR" }, states: {
+      "sensor.floor_schedule": { state: "unknown", attributes: { ...attrs, ...extra } },
+    } };
+    return card.children[0].innerHTML;
+  };
+  check(render().includes("keeps the load powered regardless"), "zero buy price equals zero keep-on threshold");
+  check(render().includes("manual overrides still take precedence"), "keep-on narration preserves manual control");
+  check(!render({ current_buy_price: null }).includes("keeps the load powered regardless"), "missing buy price never claims keep-on");
+  check(!render({ current_buy_price: 0.01 }).includes("keeps the load powered regardless"), "above threshold resumes normal rationale");
+  check(!render({ enabled: false }).includes("keeps the load powered regardless"), "disabled load never claims keep-on");
+}
+
 console.log(failures ? `\n${failures} failure(s)` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

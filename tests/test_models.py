@@ -20,6 +20,7 @@ def test_from_subentry_parses_core_fields():
             "runs_per_day": 2,
             "min_separation_minutes": 30,
             "price_cap": 0.15,
+            "keep_on_price": 0.0,
             "min_service_minutes": 60,
             "controlled_entity": "switch.heater",
         }
@@ -31,6 +32,7 @@ def test_from_subentry_parses_core_fields():
     assert cfg.runs_per_day == 2
     assert cfg.min_separation_minutes == 30
     assert cfg.cap == 0.15
+    assert cfg.keep_on_price == 0.0
     assert cfg.min_service_minutes == 60
     assert cfg.controlled_entity == "switch.heater"
 
@@ -41,8 +43,39 @@ def test_from_subentry_applies_defaults():
     assert cfg.earliest is None
     assert cfg.deadline is None
     assert cfg.cap is None
+    assert cfg.keep_on_price is None
     assert cfg.runs_per_day == 1
     assert not cfg.is_informational
+
+
+def test_load_config_direct_constructor_keeps_old_positional_signature():
+    cfg = LoadConfig(
+        "X",
+        ScheduleMode.NON_SEQUENTIAL,
+        0,
+        None,
+        None,
+        None,
+        1,
+        0,
+        0,
+        0,
+        None,
+        0,
+        None,
+        True,
+        False,
+        None,
+        0,
+        None,
+        18,
+        None,
+        50,
+        None,
+        "runtime",
+        None,
+    )
+    assert cfg.keep_on_price is None
 
 
 def test_build_load_params_resolves_window_and_uses_runtime_target():

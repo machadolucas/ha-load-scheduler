@@ -60,6 +60,11 @@ exposes simple knobs.
   the forecast clearly wins, and always bounded by the minimum-service floor.
 - **Absolute price cap/floor**, **min-run / min-off** dwell, **manual boost**
   (a toggle — press again to cancel), and a **temporary disable** switch.
+- **Keep-on buy-price threshold** — optionally keep an enabled load on whenever
+  the current buy price is at or below a per-load €/kWh threshold, regardless of
+  its schedule, window, or target. The thermostat remains in charge; above the
+  threshold or when the current price is unavailable, normal scheduling applies.
+  Manual overrides are respected.
 - **Coexist (top-up) mode** — a load can run *alongside* your existing control:
   the scheduler only ever switches it **on** (cheap hours / solar / safety floor)
   and only switches **off** runs it started itself, never an external one. It
@@ -97,7 +102,7 @@ Copy `custom_components/load_scheduler` into your Home Assistant
    sell-price and a solar-production forecast).
 2. **Add a load** (from the integration's page) and follow the wizard: mode,
    target, search window/deadline, optional actuation target, solar options,
-   minimum-service, and failsafe.
+   minimum-service, failsafe, and optional keep-on buy-price threshold.
 
 Each load exposes a `binary_sensor` (running), a merged `schedule` sensor (next
 start + the upcoming periods), a `number` (target), an `enabled` switch and a

@@ -8,6 +8,7 @@ between add and reconfigure.
 
 from __future__ import annotations
 
+from math import isfinite
 from typing import Any
 
 import voluptuous as vol
@@ -40,6 +41,7 @@ from .const import (
     CONF_FORECAST_PRICE_ENTITY,
     CONF_FORECAST_PRICE_MARGIN,
     CONF_HORIZON_HOURS,
+    CONF_KEEP_ON_PRICE,
     CONF_LIVE_SELL_ENTITY,
     CONF_MIN_OFF,
     CONF_MIN_RUN,
@@ -268,6 +270,17 @@ def _load_schema(defaults: dict) -> vol.Schema:
                 )
             ),
             vol.Optional(
+                CONF_KEEP_ON_PRICE, description=suggest(CONF_KEEP_ON_PRICE)
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=-5,
+                    max=5,
+                    step=0.001,
+                    unit_of_measurement="€/kWh",
+                    mode=selector.NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Optional(
                 CONF_CONTROLLED_ENTITY, description=suggest(CONF_CONTROLLED_ENTITY)
             ): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain=["switch", "input_boolean"])
@@ -429,6 +442,9 @@ class LoadSubentryFlowHandler(ConfigSubentryFlow):
     def _validate(self, data: dict) -> dict[str, str]:
         """Field errors for a load's settings (empty when valid)."""
         errors: dict[str, str] = {}
+        keep_on_price = data.get(CONF_KEEP_ON_PRICE)
+        if keep_on_price is not None and not isfinite(keep_on_price):
+            errors[CONF_KEEP_ON_PRICE] = "invalid_keep_on_price"
         controlled = data.get(CONF_CONTROLLED_ENTITY)
         if controlled and data.get(CONF_MODE) != MODE_INFORMATIONAL:
             # Two actuating loads on one switch fight each other: each reads the

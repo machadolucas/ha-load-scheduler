@@ -98,6 +98,7 @@ There is no policy enum — load *types* are expressed through config:
 
 Actuator precedence per tick (`actuation.py`): **manual override** (a
 foreign-context change backs off for a grace period) → **low-temp safety floor**
+→ **optional buy-price keep-on** (enabled loads, current buy ≤ threshold)
 → **scheduled plan** (cheap/solar/min-service/boost) → **real-time divert**
 (`divert.py`: predicted interval-close net, sell-gated, priority-preserving,
 load-aware engage so a load only starts if its own draw still leaves the interval

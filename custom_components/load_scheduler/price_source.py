@@ -33,6 +33,7 @@ from __future__ import annotations
 from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from math import isfinite
 
 # Attribute name triples: the *previous* day's list, the *today* list and the
 # matching *tomorrow* list. The previous-day list matters because a feed can be
@@ -79,6 +80,22 @@ class FormatSpec:
 
 class PriceFormatError(ValueError):
     """Raised when a price entity's attributes can't be understood."""
+
+
+def buy_price_at(slots: list[ForecastSlot], now: datetime) -> float | None:
+    """Read the current interval only; never extend a cheap price into a gap."""
+    return next((s.buy for s in slots if s.start <= now < s.end and isfinite(s.buy)), None)
+
+
+def keep_on_at_price(buy: float | None, threshold: float | None) -> bool:
+    """An optional inclusive buy-price override, independent of solar or targets."""
+    return (
+        buy is not None
+        and threshold is not None
+        and isfinite(buy)
+        and isfinite(threshold)
+        and buy <= threshold
+    )
 
 
 def _first_present(keys: list[str], item: dict) -> str | None:

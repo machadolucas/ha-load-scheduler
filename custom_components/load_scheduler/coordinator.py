@@ -183,6 +183,7 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         # like the price gap), keyed by a short source label.
         self._source_errors: set[str] = set()
         self._config_cache: dict[str, tuple[object, LoadConfig]] = {}
+        self._keep_on_price_cache: tuple[object, list[price_source.ForecastSlot]] | None = None
         # True while the price forecast has slots but none covering *now*; kept
         # so the warning is logged on transition, not on every 5-minute tick.
         self._price_gap: bool = False
@@ -513,6 +514,29 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         self.runtime_for(subentry_id).boost_until = None
         self._store.async_schedule_save(self._runtime_snapshot)
         await self.async_refresh()
+
+    def keep_on_price_slots(self) -> list[price_source.ForecastSlot]:
+        """Confirmed buy intervals for live control, without predictor estimates.
+
+        Cache against the HA State object so repeated actuator/sensor reads do
+        not reparse the forecast. An unavailable feed must release this rule
+        even if its old forecast attributes are still attached.
+        """
+        state = self.hass.states.get(self._buy_entity)
+        cached = self._keep_on_price_cache
+        if cached is not None and cached[0] is state:
+            return cached[1]
+        slots = []
+        if state is not None and state.state not in ("unknown", "unavailable"):
+            try:
+                slots = price_source.slots_from_state(state)
+            except price_source.PriceFormatError:
+                pass
+        self._keep_on_price_cache = (state, slots)
+        return slots
+
+    def current_buy_price(self, now: datetime) -> float | None:
+        return price_source.buy_price_at(self.keep_on_price_slots(), now)
 
     def _price_slots(self) -> list[engine.Slot]:
         """Real price slots, optionally extended with the predictor's forecast.

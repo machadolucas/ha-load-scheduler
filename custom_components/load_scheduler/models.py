@@ -23,6 +23,7 @@ from .const import (
     CONF_FEEDBACK_ENTITY,
     CONF_FEEDBACK_IDLE_W,
     CONF_HORIZON_HOURS,
+    CONF_KEEP_ON_PRICE,
     CONF_MIN_OFF,
     CONF_MIN_RUN,
     CONF_MIN_SEPARATION,
@@ -88,6 +89,7 @@ class LoadConfig:
     failsafe_start: time | None
     target_type: str
     delivered_entity: str | None
+    keep_on_price: float | None = None
 
     @classmethod
     def from_subentry(cls, data: Mapping) -> LoadConfig:
@@ -120,6 +122,11 @@ class LoadConfig:
             failsafe_start=_parse_time(data.get(CONF_FAILSAFE_START)),
             target_type=data.get(CONF_TARGET_TYPE, DEFAULT_TARGET_TYPE),
             delivered_entity=data.get(CONF_DELIVERED_ENTITY),
+            keep_on_price=(
+                float(data[CONF_KEEP_ON_PRICE])
+                if data.get(CONF_KEEP_ON_PRICE) is not None
+                else None
+            ),
         )
 
     @property
