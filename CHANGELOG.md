@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.18.2 — 2026-11-11
+
+- Declare optional HTTP, Lovelace and recorder dependencies used by the integration.
+- Fix the Boost action target schema while keeping its integration entity filter.
+- Enable GitHub Actions tests, lint and Home Assistant/HACS validation.
+- Keep scheduling logic and existing configuration unchanged.
+
 ## 0.18.1 — 2026-11-11
 
 - Add refreshed integration artwork as bundled 256 px and 512 px icons for
