@@ -20,8 +20,3 @@ custom_components/load_scheduler/frontend/dist/*.map
 .DS_Store
 .idea/
 .vscode/
-
-# Temporary: pushing these needs a GitHub token with `workflow` scope (or an
-# SSH key). The files exist locally; remove this block and commit them once
-# that's configured. See README/CLAUDE notes.
-/.github/workflows/

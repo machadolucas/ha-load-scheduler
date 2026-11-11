@@ -4,8 +4,8 @@ Working notes for AI agents and future-me. Read this before changing code.
 
 **Status (beta):** all features below are implemented and covered by tests (run
 them — see Dev workflow). Tests run under a Python **3.13** environment because
-Home Assistant doesn't support 3.14 yet. The CI workflow files exist locally but
-are git-ignored (the push token lacks `workflow` scope). See
+Home Assistant doesn't support 3.14 yet. GitHub Actions runs lint and tests on
+pushes and pull requests; hassfest and HACS validation also run daily. See
 `docs/architecture.md` for the module map and data flow.
 
 ## What this is
