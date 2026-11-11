@@ -16,6 +16,18 @@ up through a guided wizard.
 > **Status: beta.** Install as a HACS custom repository (below) — not yet in the
 > HACS default store. Backed by an extensive test suite.
 
+## Integration icon
+
+Home Assistant 2026.3+ uses the icon bundled in
+`custom_components/load_scheduler/brand/`; no upstream brands submission is
+needed for the local icon. The integration's existing minimum Home Assistant
+version is unchanged. Earlier supported versions can run the integration
+without this artwork. Legacy HACS catalog displays may use different artwork.
+
+The current artwork master is `brands/icon-master.png`. The older
+`brands/icon.svg`, `brands/icon.png` and `brands/icon@2x.png` are legacy assets.
+See [release notes](CHANGELOG.md).
+
 ## Why
 
 15-minute spot pricing makes "run this when it's cheap" surprisingly fiddly:
