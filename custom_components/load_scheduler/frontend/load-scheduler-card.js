@@ -172,16 +172,313 @@ function loadControls(hass, scheduleEntityId) {
   return found ? { ...found } : { enabled: null, boost: null, target: null };
 }
 
-// Minutes left on an active boost, read from the schedule sensor's
-// `boost_until` (a local ISO timestamp). 0 when there is no boost or it has
-// already lapsed — the coordinator clears the attribute on its next tick, so
-// don't trust a stale one.
-function boostRemaining(attrs) {
-  const until = attrs && attrs.boost_until;
-  if (!until) return 0;
-  const ms = new Date(until) - Date.now();
-  return ms > 0 ? ms / 60000 : 0;
+// Both cards use the same controls and queue. Only signed deltas cross the
+// wire: calculating a replacement duration in the browser loses concurrent
+// changes from another dashboard (and time spent waiting for a refresh).
+let boostUiId = 0;
+class BoostControls {
+  constructor(host) {
+    this.host = host;
+    this.states = new Map();
+    this.visible = new Set();
+    this.revision = 0;
+    this.id = `ls-boost-${++boostUiId}`;
+    this.epoch = 0;
+    this.offline = false;
+    this.onDisconnect = () => this.abort("Connection lost. Check the boost before trying again.");
+    this.onReady = () => { this.offline = false; this.changed(); };
+  }
+
+  state(entity) {
+    if (!this.states.has(entity)) {
+      const st = this.host._hass?.states[entity];
+      this.states.set(entity, {
+        until: this.sourceUntil(st), sensor: st, floor: 0,
+        queue: [], flight: null, starting: 0, error: "",
+      });
+    }
+    return this.states.get(entity);
+  }
+
+  sourceUntil(st) {
+    const until = Date.parse(st?.attributes?.boost_until);
+    return Number.isFinite(until) ? until : 0;
+  }
+
+  update(hass) {
+    const connection = hass?.connection;
+    if (connection !== this.connection) {
+      this.unlisten();
+      this.connection = connection;
+      connection?.addEventListener?.("disconnected", this.onDisconnect);
+      connection?.addEventListener?.("ready", this.onReady);
+    }
+    const offline = hass?.connected === false || connection?.connected === false;
+    if (offline && !this.offline) this.abort("Connection lost. Check the boost before trying again.");
+    this.offline = offline;
+    for (const [entity, s] of this.states) {
+      const st = hass?.states[entity];
+      const until = this.sourceUntil(st);
+      // A response can arrive before HA passes its state event into this card.
+      // Server timestamps keep old intermediate events from undoing a preview.
+      if (!s.flight && !s.queue.length &&
+          (!s.floor || Date.parse(st?.last_updated) >= s.floor || until === s.until)) {
+        if (s.until !== until) this.revision++;
+        s.until = until;
+        s.floor = 0;
+      }
+      if (s.starting && until > Date.now()) {
+        s.starting = 0;
+        s.until = until;
+        this.announce("Boost started.");
+        this.revision++;
+      }
+      s.sensor = st;
+    }
+  }
+
+  unlisten() {
+    this.connection?.removeEventListener?.("disconnected", this.onDisconnect);
+    this.connection?.removeEventListener?.("ready", this.onReady);
+  }
+
+  disconnect() {
+    this.abort("Card disconnected. Check the boost before trying again.");
+    this.unlisten();
+    this.connection = null;
+    clearTimeout(this.timer);
+    this.timer = null;
+  }
+
+  abort(message) {
+    this.epoch++;
+    for (const [entity, s] of this.states) {
+      if (s.flight || s.queue.length || s.starting) {
+        s.error = message;
+        this.announce(message, true);
+      }
+      s.queue = [];
+      s.flight = null;
+      s.starting = 0;
+      s.floor = 0;
+      s.until = this.sourceUntil(this.host._hass?.states[entity]);
+    }
+    this.offline = true;
+    this.changed();
+  }
+
+  get busy() {
+    return [...this.states.values()].some(s => s.flight || s.queue.length || s.starting);
+  }
+
+  projected(s) {
+    return s.until + [s.flight, ...s.queue].reduce(
+      (sum, op) => sum + (op?.kind === "adjust" ? op.minutes * 60000 : 0), 0,
+    );
+  }
+
+  changed() {
+    this.revision++;
+    this.host._render();
+  }
+
+  announce(text, error = false) {
+    const region = error ? this.alertRegion : this.liveRegion;
+    if (region) region.textContent = text;
+  }
+
+  beginRender() { this.visible.clear(); }
+
+  afterRender() {
+    // These regions live outside the rebuilt markup so screen readers observe
+    // text changes reliably; the countdown itself is deliberately not live.
+    if (!this.liveRegion) {
+      for (const [key, role] of [["liveRegion", "status"], ["alertRegion", "alert"]]) {
+        const el = document.createElement("div");
+        el.setAttribute("role", role);
+        el.setAttribute("aria-atomic", "true");
+        el.style.cssText = "position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);";
+        this.host.appendChild(el);
+        this[key] = el;
+      }
+    }
+    clearTimeout(this.timer);
+    this.timer = null;
+    let delay = Infinity;
+    for (const entity of this.visible) {
+      const s = this.state(entity);
+      const left = this.projected(s) - Date.now();
+      if (s.starting) delay = Math.min(delay, 1000);
+      if (left > 0) delay = Math.min(delay, (left % 60000 || 60000) + 20);
+    }
+    if (delay < Infinity && this.host.isConnected !== false) {
+      this.timer = setTimeout(() => {
+        for (const s of this.states.values()) {
+          if (s.starting && Date.now() >= s.starting) {
+            s.starting = 0;
+            s.error = "Boost status has not updated. Check the load before trying again.";
+            this.announce(s.error, true);
+          }
+        }
+        this.changed();
+      }, delay);
+      this.timer.unref?.();
+    }
+  }
+
+  html(entity, a, configured, effective) {
+    this.visible.add(entity);
+    const s = this.state(entity);
+    const until = this.projected(s);
+    const left = Math.max(0, (until - Date.now()) / 60000);
+    const stopping = s.flight?.kind === "cancel" || s.queue.some(op => op.kind === "cancel");
+    const pending = !!(s.flight || s.queue.length || s.starting);
+    const name = (a.friendly_name || entity).replace(/\s*schedule$/i, "");
+    const id = `${this.id}-${entity.replace(/[^a-z0-9_-]/gi, "-")}`;
+    const button = (action, label, description, disabled, minutes = "", reason = "") =>
+      `<span title="${esc(reason || description)}"><button type="button" class="boost-button${action === "stop" ? " boost-stop" : ""}"
+        data-action="boost-${action}" data-boost-action="${action}" data-entity="${esc(entity)}"
+        data-minutes="${minutes}" aria-label="${esc(`${description} for ${name}`)}"
+        ${reason ? `aria-describedby="${id}-${action}-${minutes}"` : ""} ${disabled ? "disabled" : ""}>${label}</button>
+        ${reason ? `<span class="boost-sr" id="${id}-${action}-${minutes}">${esc(reason)}</span>` : ""}</span>`;
+    let content;
+    if (left > 0) {
+      const blocked = this.offline || stopping;
+      const minusReason = left <= 60 ? "One hour or less remains. Use Stop boost to end early." : "";
+      const plusReason = left + 60 > 1440 ? "A boost can have at most 24 hours remaining." : "";
+      content = `<div class="boost-status">${BOLT_SVG}Boosting · ${fmtDuration(Math.ceil(left))} left</div>
+        <div class="boost-caption">Boost ends at ${fmtClock(until)}</div>
+        <div class="boost-actions">
+          ${button("adjust", "−1h", "Reduce boost by 1 hour", blocked || !!minusReason, -60, minusReason)}
+          ${button("adjust", "+1h", "Add 1 hour to boost", blocked || !!plusReason, 60, plusReason)}
+          ${button("stop", stopping ? "Stopping…" : "Stop boost", "Stop boost", blocked)}
+        </div>`;
+    } else {
+      content = button("start", pending ? "Starting…" : `${BOLT_SVG}Boost`, "Start boost", this.offline || pending, configured || "") +
+        `<div class="boost-caption">${fmtDuration(effective)}</div>`;
+    }
+    return `<div class="boost-control${left > 0 ? " boost-running" : ""}" data-boost-entity="${esc(entity)}"
+      role="group" aria-label="${esc(`Boost controls for ${name}`)}" tabindex="-1">
+      ${content}${pending ? `<div class="boost-caption boost-progress">${stopping ? "Stopping boost…" : "Updating…"}</div>` : ""}
+      ${s.error ? `<div class="boost-error">${esc(s.error)}</div>` : ""}</div>`;
+  }
+
+  handle(el) {
+    if (!el.dataset.action?.startsWith("boost-")) return false;
+    const entity = el.dataset.entity;
+    if (el.disabled || !entity || this.offline) return true;
+    const s = this.state(entity);
+    const kind = { "boost-start": "start", "boost-adjust": "adjust", "boost-stop": "cancel" }[el.dataset.action];
+    if (!kind) return true;
+    const stopping = s.flight?.kind === "cancel" || s.queue.some(op => op.kind === "cancel");
+    if (stopping) return true;
+    const minutes = Number(el.dataset.minutes);
+    const left = (this.projected(s) - Date.now()) / 60000;
+    if (kind === "adjust" && (s.starting || ![-60, 60].includes(minutes) || left <= 0 ||
+        (minutes < 0 && left <= 60) || (minutes > 0 && left + 60 > 1440))) return true;
+    if (kind === "start" && (s.flight || s.starting || left > 0)) return true;
+    if (kind === "cancel") s.queue = [];
+    s.error = "";
+    this.announce("", true);
+    s.queue.push({ kind, minutes });
+    this.host._armCollapse?.();
+    this.pump(entity, s);
+    this.changed();
+    return true;
+  }
+
+  async pump(entity, s) {
+    if (s.flight || !s.queue.length) return;
+    const op = s.queue.shift();
+    const epoch = this.epoch;
+    s.flight = op;
+    try {
+      const data = {};
+      if (op.kind === "adjust" || (op.kind === "start" && op.minutes > 0)) data.minutes = op.minutes;
+      const result = await this.host._hass.callWS({
+        type: "call_service", domain: "load_scheduler",
+        service: { start: "boost", adjust: "adjust_boost", cancel: "cancel_boost" }[op.kind],
+        target: { entity_id: entity }, service_data: data, return_response: op.kind !== "start",
+      });
+      if (epoch !== this.epoch) return;
+      if (op.kind === "start") {
+        s.until = this.sourceUntil(this.host._hass.states[entity]);
+        if (s.until <= Date.now()) s.starting = Date.now() + 10000;
+        else this.announce("Boost started.");
+      } else {
+        const values = Object.values(result?.response?.boost_until || {});
+        if (values.length !== 1) throw new Error("Boost status could not be confirmed.");
+        const until = values[0] === null ? 0 : Date.parse(values[0]);
+        if (!Number.isFinite(until)) throw new Error("Boost status could not be confirmed.");
+        s.until = until;
+        s.floor = Date.parse(result.response.updated_at) || 0;
+      }
+      s.error = "";
+      s.flight = null;
+      if (!s.queue.length && op.kind !== "start") {
+        const left = Math.max(0, Math.ceil((s.until - Date.now()) / 60000));
+        this.announce(left ? `Boost updated. ${fmtDuration(left)} left. Boost ends at ${fmtClock(s.until)}.` : "Boost stopped.");
+      }
+    } catch (err) {
+      if (epoch !== this.epoch) return;
+      // An explicit Stop is still safe after a failed adjustment. It is a new
+      // user request, not a retry of the uncertain signed change.
+      s.queue = s.queue.filter(next => next.kind === "cancel");
+      s.flight = null;
+      s.starting = 0;
+      s.floor = 0;
+      s.until = this.sourceUntil(this.host._hass.states[entity]);
+      s.error = `Could not update boost. ${err?.message || "Check its status before trying again."}`;
+      this.announce(s.error, true);
+    }
+    if (epoch !== this.epoch) return;
+    this.host._armCollapse?.();
+    this.changed();
+    this.pump(entity, s);
+  }
 }
+
+function boostControls(host) {
+  return host._boostUI || (host._boostUI = new BoostControls(host));
+}
+
+// Rendering replaces innerHTML, so restore the same logical boost button.
+// If it disappeared or became disabled, focus the group rather than another
+// action: a second Space must never undo a reduction or restart a stopped load.
+function renderWithBoostFocus(root, html) {
+  const active = root.getRootNode?.().activeElement || document.activeElement;
+  const focus = root.contains?.(active) && active?.dataset ?
+    active.dataset.boostAction ? { ...active.dataset } :
+    active.dataset.boostEntity ? { entity: active.dataset.boostEntity } : null : null;
+  root.innerHTML = html;
+  if (!focus) return;
+  const buttons = [...root.querySelectorAll("[data-boost-action]")].filter(el => el.dataset.entity === focus.entity && !el.disabled);
+  const next = buttons.find(el => el.dataset.boostAction === focus.boostAction && el.dataset.minutes === focus.minutes) ||
+    [...root.querySelectorAll("[data-boost-entity]")].find(el => el.dataset.boostEntity === focus.entity);
+  next?.focus({ preventScroll: true });
+}
+
+const BOOST_CSS = `
+  .boost-control { display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+    max-width: 100%; font-variant-numeric: tabular-nums; }
+  .boost-status { display: flex; align-items: center; gap: 5px; font-size: 0.84em; font-weight: 600; }
+  .boost-control svg { width: 16px; height: 16px; flex: 0 0 auto; }
+  .boost-status svg { color: var(--warning-color, #ff9800); }
+  .boost-caption { color: var(--secondary-text-color); font-size: 0.74em; }
+  .boost-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+  .boost-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+    font: inherit; font-size: 0.82em; font-weight: 500; min-height: 44px; min-width: 44px;
+    box-sizing: border-box; padding: 8px 12px; border-radius: 12px; cursor: pointer;
+    border: 1px solid var(--divider-color, #888); color: var(--primary-text-color);
+    background: var(--card-background-color); white-space: nowrap; }
+  .boost-button:hover:not(:disabled) { background: var(--secondary-background-color); border-color: var(--primary-color); }
+  .boost-button:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
+  .boost-control:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 3px; border-radius: 4px; }
+  .boost-button:disabled { cursor: default; color: var(--disabled-text-color, #888); opacity: 0.6; }
+  .boost-stop { color: var(--secondary-text-color); }
+  .boost-error { color: var(--error-color, #db4437); font-size: 0.76em; max-width: 28em; overflow-wrap: anywhere; }
+  .boost-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+`;
 
 function define(name, cls) {
   if (!customElements.get(name)) customElements.define(name, cls);
@@ -277,26 +574,14 @@ const CARD_CSS = `
   .detail .prow { font-size: 0.78em; line-height: 1.5; }
   .detail .prow.tot { color: var(--secondary-text-color); margin-top: 3px; }
   .detail .prow.muted { color: var(--secondary-text-color); }
-  /* The schedule list and the boost control share a row so the panel gains no
-     height; flex-wrap (not a viewport media query — the card's width is set by
-     its dashboard column, not the window) drops the control below when narrow. */
+  /* Wrap according to card width: dashboard columns can be much narrower than
+     the viewport. The boost controls keep their touch targets when wrapped. */
   .detail-cols { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px 10px; }
   /* The floor stops the schedule rows being squeezed into two lines each; once
      the control no longer fits beside them it wraps to its own row instead. */
   .detail-main { flex: 1 1 55%; min-width: min(100%, 210px); }
   .detail-side { flex: 0 0 auto; margin-left: auto; display: flex; flex-direction: column;
-          align-items: flex-end; gap: 2px; }
-  .bbtn { display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
-          border: 1px solid var(--divider-color, rgba(127,127,127,0.4));
-          background: var(--card-background-color); color: var(--primary-text-color);
-          border-radius: 13px; padding: 3px 11px; font-size: 0.78em; font-weight: 500;
-          user-select: none; white-space: nowrap; }
-  .bbtn:hover { background: var(--secondary-background-color); }
-  .bbtn svg { width: 12px; height: 12px; flex: 0 0 auto; }
-  /* Boosting reuses the heating orange, so the pill matches the timeline. */
-  .bbtn.active { background: #ff9800; border-color: #ff9800; color: #fff; }
-  .bcap { font-size: 0.66em; color: var(--secondary-text-color); white-space: nowrap;
-          padding-right: 2px; }
+          align-items: flex-start; gap: 2px; max-width: 100%; }
   /* 24h activity timeline (history-graph style), colours matching the statuses. */
   .tlwrap { margin-top: 7px; position: relative; }
   .tl { display: flex; height: 14px; border-radius: 7px; overflow: hidden;
@@ -342,10 +627,17 @@ class LoadSchedulerCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    boostControls(this).update(hass);
+    this._render();
+  }
+
+  connectedCallback() {
+    if (this._hass) boostControls(this).update(this._hass);
     this._render();
   }
 
   disconnectedCallback() {
+    this._boostUI?.disconnect();
     if (this._timer) {
       clearTimeout(this._timer);
       this._timer = null;
@@ -563,8 +855,8 @@ class LoadSchedulerCard extends HTMLElement {
       if (a.est_cost) tot.push(`est ${sym}${a.est_cost.toFixed(2)}`);
       if (tot.length) main += `<div class="prow tot">${tot.join(" · ")}</div>`;
     }
-    // The boost control fills the empty space beside the schedule list rather
-    // than adding a row, so the panel keeps its height.
+    // Keep boost controls beside the schedule where there is room, otherwise
+    // let them wrap intact below it.
     const side = this._boostHtml(item, a);
     const cols = side
       ? `<div class="detail-cols"><div class="detail-main">${main}</div>${side}</div>`
@@ -595,22 +887,12 @@ class LoadSchedulerCard extends HTMLElement {
     return { configured, effective: configured || (target > 0 ? target : 60) };
   }
 
-  // The combined boost status + action pill, with the duration underneath it.
+  // The same boost group is used by the diagnostic card.
   _boostHtml(item, a) {
     const ctl = loadControls(this._hass, this._selected);
     if (!ctl.boost) return ""; // informational load: nothing to boost
-    const left = boostRemaining(a);
     const { configured, effective } = this._boostMinutes(item, a);
-    const label = left ? `${fmtDuration(left)} left` : "Boost";
-    const cap = left ? `until ${fmtClock(a.boost_until)}` : fmtDuration(effective);
-    return `<div class="detail-side">
-      <span class="bbtn${left ? " active" : ""}" data-action="boost"
-        data-entity="${esc(this._selected)}" data-cancel="${esc(ctl.boost)}"
-        data-minutes="${configured || ""}" data-on="${left ? "true" : "false"}"
-        title="${left ? "Cancel the boost" : `Run now for ${fmtDuration(effective)}`}"
-        >${BOLT_SVG}${label}</span>
-      <span class="bcap">${cap}</span>
-    </div>`;
+    return `<div class="detail-side">${boostControls(this).html(this._selected, a, configured, effective)}</div>`;
   }
 
   _historyHours() {
@@ -786,6 +1068,12 @@ class LoadSchedulerCard extends HTMLElement {
   _armCollapse() {
     if (this._timer) clearTimeout(this._timer);
     this._timer = setTimeout(() => {
+      const root = this.getRootNode?.();
+      const active = root?.activeElement || document.activeElement;
+      if (this._boostUI?.busy || (this.contains?.(active) && active?.closest?.("[data-boost-entity]"))) {
+        this._armCollapse();
+        return;
+      }
       this._selected = null;
       this._timer = null;
       this._render();
@@ -838,25 +1126,7 @@ class LoadSchedulerCard extends HTMLElement {
         }
         return;
       }
-      if (action.dataset.action === "boost") {
-        this._armCollapse();
-        if (this._hass && entity) {
-          if (action.dataset.on === "true") {
-            // Only the button cancels: it also flags the manual stop so the
-            // plan/divert don't re-grab the load. The service has no cancel.
-            this._hass.callService("button", "press", { entity_id: action.dataset.cancel });
-          } else {
-            // The service resolves entity → device → load, so the schedule
-            // sensor is a valid target. No `minutes` = the backend's own
-            // default (the load's target runtime).
-            const mins = parseFloat(action.dataset.minutes);
-            const data = { entity_id: entity };
-            if (mins > 0) data.minutes = mins;
-            this._hass.callService("load_scheduler", "boost", data);
-          }
-        }
-        return;
-      }
+      if (boostControls(this).handle(action)) return;
       const on = action.dataset.on === "true";
       if (this._hass && entity) {
         this._hass.callService("homeassistant", on ? "turn_off" : "turn_on", {
@@ -915,7 +1185,7 @@ class LoadSchedulerCard extends HTMLElement {
   // DOM mid-hover/click (flicker + missed clicks). We rebuild only when this
   // changes — plus a 1-minute bucket so relative times still tick.
   _signature() {
-    const parts = [this._configJson, this._selected || "", Math.floor(Date.now() / 60000)];
+    const parts = [this._configJson, this._selected || "", Math.floor(Date.now() / 60000), this._boostUI?.revision];
     for (const it of this._entities()) {
       const st = this._hass.states[it.entity];
       if (!st) {
@@ -985,10 +1255,16 @@ class LoadSchedulerCard extends HTMLElement {
       this._root.addEventListener("pointerleave", () => {
         if (!this._tipPinned) this._hideTip();
       });
+      for (const event of ["focusin", "focusout"]) {
+        this._root.addEventListener(event, e => {
+          if (e.target.closest?.("[data-boost-entity]")) this._armCollapse();
+        });
+      }
     }
     const sig = this._signature();
     if (sig === this._sig) return; // nothing the card shows has changed
     this._sig = sig;
+    boostControls(this).beginRender();
     const title = this._config.title
       ? `<div class="title">${esc(this._config.title)}</div>`
       : "";
@@ -996,7 +1272,8 @@ class LoadSchedulerCard extends HTMLElement {
     const grid = entities.length
       ? `<div class="grid">${entities.map((e) => this._tile(e)).join("")}</div>`
       : `<div class="hint">No Load Scheduler schedule sensors found — pick them in the card editor.</div>`;
-    this._root.innerHTML = `<style>${CARD_CSS}</style>${title}${grid}${this._detail()}`;
+    renderWithBoostFocus(this._root, `<style>${CARD_CSS}${BOOST_CSS}</style>${title}${grid}${this._detail()}`);
+    boostControls(this).afterRender();
   }
 }
 
@@ -1248,6 +1525,7 @@ const DIAG_CSS = `
   .periods .tot { color: var(--secondary-text-color); margin-top: 2px; }
   .periods .k { color: var(--secondary-text-color); }
   .controls { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
+  .controls .boost-running { flex-basis: 100%; }
   .btn { cursor: pointer; border: 1px solid var(--divider-color, rgba(127,127,127,0.4));
          background: var(--card-background-color); color: var(--primary-text-color);
          border-radius: 14px; padding: 4px 12px; font-size: 0.8em; user-select: none;
@@ -1288,8 +1566,16 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    boostControls(this).update(hass);
     this._render();
   }
+
+  connectedCallback() {
+    if (this._hass) boostControls(this).update(this._hass);
+    this._render();
+  }
+
+  disconnectedCallback() { this._boostUI?.disconnect(); }
 
   // Everything the rendered output depends on, as a flat list compared
   // element-wise. HA calls `set hass` on *every* state change in the instance
@@ -1303,6 +1589,7 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
       this._configJson,
       [...this._expanded].sort().join("|"),
       Math.floor(Date.now() / 60000),
+      this._boostUI?.revision,
       hass.config && hass.config.currency,
     ];
     for (const it of this._entities()) {
@@ -1370,15 +1657,8 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
     const ctl = loadControls(this._hass, entityId);
     const parts = [];
     if (ctl.boost) {
-      const left = boostRemaining(a);
       const mins = parseFloat(this._opt("boost_minutes", 0));
-      parts.push(
-        `<span class="btn${left ? " active" : ""}" data-action="boost" data-entity="${esc(
-          entityId,
-        )}" data-cancel="${esc(ctl.boost)}" data-minutes="${mins > 0 ? mins : ""}" data-on="${
-          left ? "true" : "false"
-        }">${left ? `Boosting · ${fmtDuration(left)} left` : "Boost"}</span>`,
-      );
+      parts.push(boostControls(this).html(entityId, a, mins > 0 ? mins : null, mins > 0 ? mins : a.target_minutes > 0 ? a.target_minutes : 60));
     }
     if (ctl.enabled) {
       const on = a.enabled !== false;
@@ -1458,17 +1738,8 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
     const action = el.dataset.action;
     const entity = el.dataset.entity;
     if (!this._hass || !entity) return;
-    if (action === "boost") {
-      if (el.dataset.on === "true") {
-        // Cancelling goes through the button: it also flags the manual stop.
-        this._hass.callService("button", "press", { entity_id: el.dataset.cancel });
-      } else {
-        const mins = parseFloat(el.dataset.minutes);
-        const data = { entity_id: entity };
-        if (mins > 0) data.minutes = mins;
-        this._hass.callService("load_scheduler", "boost", data);
-      }
-    } else if (action === "enable") {
+    if (boostControls(this).handle(el)) return;
+    if (action === "enable") {
       const turnOn = el.dataset.on !== "true";
       this._hass.callService("switch", turnOn ? "turn_on" : "turn_off", { entity_id: entity });
     } else if (action === "target") {
@@ -1514,6 +1785,7 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
     const prev = this._sig;
     if (prev && prev.length === sig.length && prev.every((v, i) => v === sig[i])) return;
     this._sig = sig;
+    boostControls(this).beginRender();
     const sym = currencySymbol(this._hass);
     const entities = this._entities();
     const title = this._config.title
@@ -1522,7 +1794,8 @@ class LoadSchedulerDiagnosticCard extends HTMLElement {
     const body = entities.length
       ? entities.map((e, i) => this._panel(e, sym, i === 0)).join("")
       : `<div class="hint">No Load Scheduler schedule sensors found — pick them in the card editor.</div>`;
-    this._card.innerHTML = `<style>${DIAG_CSS}</style>${title}${body}`;
+    renderWithBoostFocus(this._card, `<style>${DIAG_CSS}${BOOST_CSS}</style>${title}${body}`);
+    boostControls(this).afterRender();
   }
 }
 

@@ -23,3 +23,35 @@ boost:
           step: 5
           unit_of_measurement: min
           mode: box
+
+adjust_boost:
+  name: Adjust boost
+  description: >-
+    Add or subtract minutes from each targeted load's active boost end time.
+    Negative adjustments can shorten a boost below five minutes; positive
+    adjustments cannot extend the end beyond 24 hours from now.
+  target:
+    entity:
+      integration: load_scheduler
+  fields:
+    minutes:
+      name: Minutes to add
+      description: Positive values extend the active boost; negative values shorten it.
+      required: true
+      example: -15
+      selector:
+        number:
+          min: -1440
+          max: 1440
+          step: 1
+          unit_of_measurement: min
+          mode: box
+
+cancel_boost:
+  name: Cancel boost
+  description: >-
+    Stop each targeted load's active boost now. Inactive or expired boosts are
+    left alone.
+  target:
+    entity:
+      integration: load_scheduler

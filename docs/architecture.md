@@ -44,6 +44,7 @@ solar entity ─┘ solar_source + baseline → excess ───┤
 | `divert.py` | Pure real-time divert decision: predicted interval-close net, load-aware engage/shed, priority-preserving | no |
 | `units.py` | Pure power-unit normalisation (`power_to_watts`) for feedback sensors vs the W idle threshold | no |
 | `competing.py` | Pure competing-controller verdict: burst / same-local-time recurrence over a decaying 7-day log of foreign flips | no |
+| `boost.py` | Pure relative boost-end calculation and bounds | no |
 | `coordinator.py` | Read sources, allocate solar by priority, run engine per load, repairs, statistics baseline | yes |
 | `actuation.py` | Resolve desired state (override → safety → buy-price keep-on → plan → divert), drive controlled entities, restart catch-up | yes |
 | `persistence.py` | `Store` for runtime (target/enabled/boost) | yes |
@@ -89,6 +90,12 @@ solar entity ─┘ solar_source + baseline → excess ───┤
   day's total (runs × target) and re-splits the rest into whole runs.
 - **Runtime state** (target / enabled / boost) lives in the `Store` (source of
   truth, in backups); entities are views/setters over it.
+- **Boost adjustments** shift the current UTC end by a signed minute delta
+  (`boost.py` validates the proposed end). The coordinator mutates runtime
+  before awaiting a refresh so concurrent relative changes accumulate. The
+  cards queue adjustments and use response timestamps to reject delayed state
+  events. Explicit cancel is active-only and idempotent; the button entity
+  retains its start/cancel toggle behavior.
 - **Actuation precedence** (per tick): manual override → low-temp safety floor →
   optional buy-price keep-on (enabled loads, current buy ≤ threshold) → scheduled plan (incl. boost / min-service) → real-time divert → off. A manual
   **off** stops the current run (cancels any boost, suppresses the rest of the

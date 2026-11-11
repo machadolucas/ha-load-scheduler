@@ -102,7 +102,9 @@ globalThis.CustomEvent = class CustomEventStub {
   }
 };
 
-new Function(fs.readFileSync(BUNDLE, "utf8"))();
+const { renderWithBoostFocus } = new Function(
+  fs.readFileSync(BUNDLE, "utf8") + "; return { renderWithBoostFocus };",
+)();
 
 /* ---- fixtures ---- */
 
@@ -552,6 +554,149 @@ console.log("diagnostic narration");
   check(!render({ current_buy_price: null }).includes("keeps the load powered regardless"), "missing buy price never claims keep-on");
   check(!render({ current_buy_price: 0.01 }).includes("keeps the load powered regardless"), "above threshold resumes normal rationale");
   check(!render({ enabled: false }).includes("keeps the load powered regardless"), "disabled load never claims keep-on");
+}
+
+
+console.log("adjustable boost controls");
+const boostNow = Date.now();
+const realNow = Date.now;
+Date.now = () => boostNow;
+const iso = ms => new Date(ms).toISOString();
+const flush = () => new Promise(resolve => setImmediate(resolve));
+function boostFixture(tag = "load-scheduler-card", minutes = 135) {
+  const card = new (registry.get(tag))();
+  card.isConnected = false; // no wall-clock timers in deterministic checks
+  card.setConfig({ entities: ["sensor.a_schedule"] });
+  const calls = [];
+  let h = deviceHass(60);
+  h = { ...h, connected: true, callWS: payload => new Promise((resolve, reject) => calls.push({payload, resolve, reject})) };
+  const setState = (left, stamp = boostNow) => {
+    const st = h.states["sensor.a_schedule"];
+    h = withState(h, "sensor.a_schedule", {
+      ...st, last_updated: iso(stamp), attributes: {
+        ...st.attributes, boost_until: left === null ? null : iso(boostNow + left * 60000),
+      },
+    });
+    card.hass = h;
+  };
+  setState(minutes);
+  if (tag === "load-scheduler-card") card._selected = "sensor.a_schedule";
+  else card._expanded.add("sensor.a_schedule");
+  // Avoid history-network code; the timeline is unrelated to these controls.
+  card._timelineHtml = () => "";
+  card._sig = null;
+  card._render();
+  const ui = card._boostUI;
+  const state = () => ui.state("sensor.a_schedule");
+  const click = (kind, mins = "") => {
+    const el = { dataset: { action: `boost-${kind}`, entity: "sensor.a_schedule", minutes: String(mins) } };
+    if (tag === "load-scheduler-card") card._onClick({target: {closest: sel => sel === "[data-action]" ? el : null}, stopPropagation() {}});
+    else card._handleAction(el);
+  };
+  const reply = (i, left, stamp = boostNow) => calls[i].resolve({response: {
+    boost_until: {sid: left === null ? null : iso(boostNow + left * 60000)}, updated_at: iso(stamp),
+  }});
+  return {card, ui, calls, click, reply, state, setState, html: () => card.children[0].innerHTML};
+}
+const boostButton = (html, mins) => (html.match(/<button\b[^>]*>[\s\S]*?<\/button>/g) || [])
+  .find(button => button.includes(`data-minutes="${mins}"`)) || "";
+for (const tag of ["load-scheduler-card", "load-scheduler-diagnostic-card"]) {
+  const f = boostFixture(tag);
+  check(f.html().includes("Boosting · 2h15 left") && f.html().includes("Boost ends at"), `${tag}: active status and end time`);
+  check(f.html().includes("Stop boost") && f.html().includes('data-action="boost-adjust"'), `${tag}: explicit native adjustment/stop buttons`);
+  f.click("adjust", 60);
+  f.click("adjust", 60);
+  f.click("adjust", -60);
+  check(f.calls.length === 1 && f.state().queue.length === 2, `${tag}: repeated taps queue behind one request`);
+  check(f.html().includes("Boosting · 3h15 left") && f.html().includes("Updating…"), `${tag}: immediate accumulated preview`);
+  check(f.calls[0].payload.service === "adjust_boost" && f.calls[0].payload.service_data.minutes === 60 &&
+    f.calls[0].payload.return_response === true && f.calls[0].payload.target.entity_id === "sensor.a_schedule", `${tag}: relative service and schedule target`);
+  f.reply(0, 195); await flush();
+  check(f.calls.length === 2 && f.html().includes("3h15 left"), `${tag}: first response preserves queued preview`);
+  f.reply(1, 255); await flush();
+  check(f.calls.length === 3 && f.calls[2].payload.service_data.minutes === -60, `${tag}: every delta is applied in order`);
+  f.reply(2, 195, boostNow + 1000); await flush();
+  f.setState(255, boostNow + 500);
+  check(f.html().includes("3h15 left"), `${tag}: delayed intermediate sensor event cannot replace final response`);
+  f.setState(75, boostNow + 2000);
+  check(f.html().includes("1h15 left"), `${tag}: newer changes from another dashboard reconcile`);
+  f.setState(60, boostNow + 3000);
+  check(boostButton(f.html(), -60).includes("disabled") && f.html().includes("One hour or less remains"), `${tag}: final-hour reduction disabled and described`);
+  f.click("adjust", -60);
+  check(f.calls.length === 3, `${tag}: stale reduction click guarded against current remaining time`);
+  f.setState(1381, boostNow + 4000);
+  check(boostButton(f.html(), 60).includes("disabled") && f.html().includes("at most 24 hours"), `${tag}: full-hour addition respects 24-hour maximum`);
+  f.setState(1380, boostNow + 5000);
+  check(!boostButton(f.html(), 60).includes("disabled"), `${tag}: exactly 23 hours permits one full hour`);
+  f.setState(-1, boostNow + 6000);
+  check(!f.html().includes('data-action="boost-adjust"') && f.html().includes('data-action="boost-start"'), `${tag}: expired boost shows only start`);
+  f.click("start");
+  check(f.calls[3].payload.service === "boost" && !("minutes" in f.calls[3].payload.service_data), `${tag}: unset default stays a backend decision`);
+  f.calls[3].resolve({}); await flush();
+  check(f.state().starting > 0, `${tag}: start stays pending until authoritative active state`);
+  f.setState(60, boostNow + 7000);
+  check(!f.state().starting && f.html().includes("Boosting"), `${tag}: start confirms from sensor`);
+  f.card.disconnectedCallback();
+}
+{
+  const f = boostFixture();
+  f.click("adjust", 60); f.click("adjust", 60); f.click("stop");
+  check(f.state().queue.length === 1 && f.state().queue[0].kind === "cancel", "Stop discards unsent deltas");
+  f.reply(0, 195); await flush();
+  check(f.calls.length === 2 && f.calls[1].payload.service === "cancel_boost", "Stop follows in-flight request through idempotent service");
+  f.reply(1, null); await flush();
+  check(!f.ui.busy && !f.html().includes('data-action="boost-adjust"'), "Stop returns to inactive controls");
+  f.card.disconnectedCallback();
+}
+{
+  const f = boostFixture();
+  f.click("adjust", 60); f.click("adjust", 60);
+  f.calls[0].reject(new Error("Request failed <script>")); await flush();
+  check(f.calls.length === 1 && !f.state().queue.length && !f.ui.busy, "Failure discards pending deltas without retry");
+  check(f.html().includes("Could not update boost") && f.html().includes("&lt;script&gt;") && f.html().includes("2h15 left"), "Failure reconciles source state and escapes inline error");
+  f.card.disconnectedCallback();
+}
+{
+  const f = boostFixture();
+  f.click("adjust", 60); f.click("adjust", 60); f.click("stop");
+  f.calls[0].reject(new Error("Adjustment rejected")); await flush();
+  check(f.calls.length === 2 && f.calls[1].payload.service === "cancel_boost", "An explicitly requested Stop still executes after adjustment failure");
+  f.reply(1, null); await flush();
+  f.card.disconnectedCallback();
+}
+{
+  const f = boostFixture();
+  f.click("adjust", 60); f.click("adjust", 60);
+  f.card.disconnectedCallback();
+  f.reply(0, 195); await flush();
+  check(f.calls.length === 1 && !f.ui.busy && f.html().includes("Card disconnected"), "Disconnect cancels unsent work and ignores late replies");
+  check(f.ui.timer === null, "Disconnect removes local countdown timer");
+}
+Date.now = realNow;
+
+console.log("boost focus preservation");
+{
+  const entity = "sensor.a_schedule";
+  let focused;
+  const plus = { dataset: { boostAction: "adjust", entity, minutes: "60" }, disabled: false,
+    focus() { focused = "plus"; } };
+  const group = { dataset: { boostEntity: entity }, focus() { focused = "group"; } };
+  const root = {
+    getRootNode: () => ({activeElement: document.activeElement}),
+    contains: () => true,
+    querySelectorAll: selector => selector === "[data-boost-action]" ? [plus] : [group],
+  };
+  document.activeElement = plus;
+  renderWithBoostFocus(root, "new output");
+  check(focused === "plus", "same logical button retains focus across rendering");
+  plus.disabled = true;
+  renderWithBoostFocus(root, "new output");
+  check(focused === "group", "disabled button moves focus to neutral group, never another action");
+  document.activeElement = group;
+  plus.disabled = false;
+  renderWithBoostFocus(root, "new output");
+  check(focused === "group", "neutral group keeps focus across later state updates");
+  delete document.activeElement;
 }
 
 console.log(failures ? `\n${failures} failure(s)` : "\nall checks passed");

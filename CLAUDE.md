@@ -44,6 +44,7 @@ history; this file is the *how*. (The original approved plan,
 | `divert.py` | **Pure** real-time divert decision: predicted interval-net + load-aware engage/shed, priority-preserving | no |
 | `units.py` | **Pure** `power_to_watts`: feedback sensors in kW/W vs the W `feedback_idle_w` threshold (sensor, coordinator, card) | no |
 | `competing.py` | **Pure** competing-controller verdict: burst / same-local-time recurrence over a decaying 7-day log of foreign flips | no |
+| `boost.py` | **Pure** relative boost-end calculation and bounds | no |
 | `coordinator.py` | Read sources, allocate solar by priority, run engine per load, statistics baseline, repairs, failsafe | yes |
 | `actuation.py` | Resolve desired state + drive controlled entities, real-time divert, restart catch-up | yes |
 | `persistence.py` | `Store` for runtime (target / enabled / boost) | yes |

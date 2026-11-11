@@ -35,17 +35,29 @@ price and source). Inside that expanded detail panel, clicking the **title**
 opens the more-info dialog of the load's controlled switch — or, for
 informational loads with no controlled entity, the schedule sensor itself.
 
-Beside the period list — in the space it leaves free, so the panel gains no
-height — sits the load's **boost pill**, with the duration printed small
-underneath it:
+Beside the period list (or below it on narrow cards) sits the load's **Boost**
+button, with its starting duration underneath it:
 
 - **⚡ Boost** (outlined) — tap to run the load now for that duration,
   overriding both the price plan and the enable switch. The caption shows how
   long that will be.
-- **⚡ 42m left** (orange, matching the "heating" colour elsewhere) — a boost is
-  running; the caption shows when it ends, and tapping cancels it (the same
-  explicit stop as the load's own Boost button, so the plan and solar divert
-  don't immediately re-grab the load).
+- While running, the card shows **⚡ Boosting · 2h15 left**, **Boost ends at
+  19:45**, and three touch-sized buttons: **−1h**, **+1h**, and **Stop boost**.
+  Each adjustment moves the existing end time by exactly one hour; it does not
+  restart the boost or change its configured starting duration. Quick repeated
+  taps preview the result immediately and are applied in order.
+- **−1h** is disabled during the final hour. **+1h** is disabled if a full
+  extra hour would exceed 24 hours remaining. Disabled controls explain why.
+- **Stop boost** cancels the override and explicitly stops the run, using the
+  same ownership safeguards and backoff as the load's own Boost button. It
+  discards queued adjustments; an adjustment already being applied finishes
+  before the stop. A stale Stop click can never start a new boost.
+
+The card shows **Updating…** while applying changes and an inline error if a
+request fails. Unsent adjustments are discarded on failure or disconnection;
+uncertain changes are never retried automatically. The end time is for the
+boost override: ordinary scheduling or a safety rule can still require the
+load after that time.
 
 The duration comes from `boost_minutes` — per entity, falling back to the
 card-wide value, falling back to what the integration itself would pick (the
@@ -112,10 +124,9 @@ the way it does — useful for tuning a load or debugging. Each panel shows:
   delivered).
 - **Schedule** — each upcoming period with its clock times, duration, source
   (☀ / ⚡), and per-period €/kWh, plus the total and a rough run cost.
-- **Controls** (optional) — inline **Boost** (run now for `boost_minutes`, or
-  the load's target runtime when unset; while boosting it shows the time left
-  and tapping cancels), **Enable/disable**, and a **target** stepper, reusing
-  the load's own button/switch/number entities.
+- **Controls** (optional) — **Boost** (run now for `boost_minutes`, or the
+  load's target runtime when unset), the same active **−1h / +1h / Stop boost**
+  controls as the compact card, **Enable/disable**, and a **target** stepper.
 
 ```yaml
 type: custom:load-scheduler-diagnostic-card
@@ -170,6 +181,15 @@ Assistant's built-in **History graph** card over the
 those binary sensors are recorded automatically.
 
 ## Notes
+
+- Automations can use `load_scheduler.adjust_boost` with a signed `minutes`
+  value to adjust an existing active boost, or `load_scheduler.cancel_boost`
+  to stop it explicitly. Both accept the same load targets as
+  `load_scheduler.boost`. Adjustment requires positive remaining time and
+  additions cannot exceed 24 hours remaining; canceling an inactive boost is
+  a no-op. Their optional response has `boost_until` end times keyed by load
+  subentry ID and a UTC `updated_at` timestamp. Existing boost defaults and
+  card configuration are unchanged.
 
 - Both cards are plain JavaScript (no build step) bundled in one file, served
   from the integration at `/load_scheduler/load-scheduler-card.js`.

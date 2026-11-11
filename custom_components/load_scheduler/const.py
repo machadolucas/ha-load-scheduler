@@ -173,6 +173,8 @@ UNOWNED_RUN_HOURS = 6
 
 # ── Services ─────────────────────────────────────────────────────────────────
 SERVICE_BOOST = "boost"
+SERVICE_ADJUST_BOOST = "adjust_boost"
+SERVICE_CANCEL_BOOST = "cancel_boost"
 ATTR_MINUTES = "minutes"
 # Bounds for the service's optional duration (the button has no such knob).
 BOOST_MIN_MINUTES = 5

@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import (
     async_track_state_change_event,
@@ -30,6 +31,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from . import baseline as baseline_mod
+from . import boost as boost_mod
 from . import competing, engine, price_source, rationale, solar_source
 from .const import (
     CONF_BASELINE_ENTITY,
@@ -513,6 +515,42 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         """Cancel an active boost, persist, and recompute."""
         self.runtime_for(subentry_id).boost_until = None
         self._store.async_schedule_save(self._runtime_snapshot)
+        await self.async_refresh()
+
+    async def async_adjust_boost(self, subentry_id: str, minutes: float) -> str | None:
+        """Adjust an active boost by exactly ``minutes`` and return its end.
+
+        The mutation precedes the first await so overlapping service calls each
+        add their delta to the latest in-memory end instead of losing updates.
+        """
+        rt = self.runtime_for(subentry_id)
+        now = dt_util.utcnow()
+        try:
+            new_end = boost_mod.adjusted_end(now, rt.boost_until, minutes)
+        except ValueError as err:
+            raise ServiceValidationError(str(err)) from err
+        rt.boost_until = new_end
+        self._store.async_schedule_save(self._runtime_snapshot)
+        await self.async_refresh()
+        current_end = self.runtime_for(subentry_id).boost_until
+        return current_end.isoformat() if current_end is not None else None
+
+    async def async_stop_boost(self, subentry_id: str) -> None:
+        """Explicitly cancel an active boost and stop our current run.
+
+        An expired boost is not an instruction to stop: it may have returned
+        to the normal schedule, which must not be interrupted by a stale cancel.
+        Clear the boost synchronously before the manual-stop await so an
+        overlapping relative adjustment cannot extend a boost being cancelled.
+        """
+        rt = self.runtime_for(subentry_id)
+        now = dt_util.utcnow()
+        if rt.boost_until is None or rt.boost_until <= now:
+            return
+        rt.boost_until = None
+        self._store.async_schedule_save(self._runtime_snapshot)
+        if self.actuator is not None:
+            await self.actuator.async_manual_stop(subentry_id)
         await self.async_refresh()
 
     def keep_on_price_slots(self) -> list[price_source.ForecastSlot]:

@@ -9,16 +9,18 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import pathlib
 
 import voluptuous as vol
 from homeassistant.const import ATTR_DEVICE_ID, ATTR_ENTITY_ID
-from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse, callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import target as target_helpers
+from homeassistant.util import dt as dt_util
 
 from .actuation import LoadActuator
 from .const import (
@@ -28,7 +30,9 @@ from .const import (
     DEFAULT_BOOST_MINUTES,
     DOMAIN,
     PLATFORMS,
+    SERVICE_ADJUST_BOOST,
     SERVICE_BOOST,
+    SERVICE_CANCEL_BOOST,
 )
 from .coordinator import LoadSchedulerConfigEntry, LoadSchedulerCoordinator
 
@@ -46,6 +50,19 @@ _BOOST_SCHEMA = cv.make_entity_service_schema(
         ),
     }
 )
+
+
+def _finite_nonzero(value: float) -> float:
+    """Validate an adjustment as a signed, finite, nonzero minute delta."""
+    if not math.isfinite(value) or value == 0:
+        raise vol.Invalid("minutes must be finite and nonzero")
+    return value
+
+
+_ADJUST_BOOST_SCHEMA = cv.make_entity_service_schema(
+    {vol.Required(ATTR_MINUTES): vol.All(vol.Coerce(float), _finite_nonzero)}
+)
+_CANCEL_BOOST_SCHEMA = cv.make_entity_service_schema({})
 
 
 def _card_version(path: pathlib.Path) -> str:
@@ -251,6 +268,30 @@ async def _async_boost_service(call: ServiceCall) -> None:
         await coordinator.async_boost(subentry_id, run)
 
 
+async def _async_adjust_boost_service(call: ServiceCall) -> dict[str, object]:
+    """Adjust each targeted active boost by the signed minute delta."""
+    updated_at = dt_util.utcnow().isoformat()
+    minutes = call.data[ATTR_MINUTES]
+    result: dict[str, str | None] = {}
+    # Resolve all targets before changing any, matching the existing boost
+    # action's all-target validation and deduplication behavior.
+    loads = _targeted_loads(call.hass, call)
+    for coordinator, subentry_id in loads:
+        result[subentry_id] = await coordinator.async_adjust_boost(subentry_id, minutes)
+    return {"boost_until": result, "updated_at": updated_at}
+
+
+async def _async_cancel_boost_service(call: ServiceCall) -> dict[str, object]:
+    """Explicitly stop targeted active boosts and report their current ends."""
+    updated_at = dt_util.utcnow().isoformat()
+    result: dict[str, str | None] = {}
+    for coordinator, subentry_id in _targeted_loads(call.hass, call):
+        await coordinator.async_stop_boost(subentry_id)
+        current_end = coordinator.runtime_for(subentry_id).boost_until
+        result[subentry_id] = current_end.isoformat() if current_end is not None else None
+    return {"boost_until": result, "updated_at": updated_at}
+
+
 @callback
 def _async_register_services(hass: HomeAssistant) -> None:
     """Register the domain-level services once, on the first hub set up.
@@ -259,9 +300,26 @@ def _async_register_services(hass: HomeAssistant) -> None:
     ones: the handler resolves the hub from the targeted device, and a second
     hub must not re-register (or, on unload, tear down) what the first owns.
     """
-    if hass.services.has_service(DOMAIN, SERVICE_BOOST):
-        return
-    hass.services.async_register(DOMAIN, SERVICE_BOOST, _async_boost_service, schema=_BOOST_SCHEMA)
+    if not hass.services.has_service(DOMAIN, SERVICE_BOOST):
+        hass.services.async_register(
+            DOMAIN, SERVICE_BOOST, _async_boost_service, schema=_BOOST_SCHEMA
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_ADJUST_BOOST):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_ADJUST_BOOST,
+            _async_adjust_boost_service,
+            schema=_ADJUST_BOOST_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_CANCEL_BOOST):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_CANCEL_BOOST,
+            _async_cancel_boost_service,
+            schema=_CANCEL_BOOST_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: LoadSchedulerConfigEntry) -> bool:
