@@ -6,8 +6,6 @@ boost:
     button applies, but with an explicit duration so automations can ask for
     exactly as much heat as they need.
   target:
-    device:
-      integration: load_scheduler
     entity:
       integration: load_scheduler
   fields:

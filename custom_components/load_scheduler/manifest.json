@@ -1,6 +1,7 @@
 {
   "domain": "load_scheduler",
   "name": "Load Scheduler",
+  "after_dependencies": ["http", "lovelace", "recorder"],
   "codeowners": ["@machadolucas"],
   "config_flow": true,
   "dependencies": [],
