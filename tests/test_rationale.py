@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from custom_components.load_scheduler import engine
-from custom_components.load_scheduler import rationale as rat
-from custom_components.load_scheduler.engine import LoadParams, ScheduleMode, Slot
+import _pure_imports  # noqa: F401 -- registers the isolated pure-module namespace
+
+# isort: split
+
+from _load_scheduler_unit import engine
+from _load_scheduler_unit import rationale as rat
+from _load_scheduler_unit.engine import LoadParams, ScheduleMode, Slot
 
 NOW = datetime(2026, 1, 15, 0, 0, tzinfo=UTC)
 

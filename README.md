@@ -131,10 +131,29 @@ notes.
 
 ## Development
 
+Validation on 2026-11-14: 363 full-suite tests passed with 94.33% coverage;
+183 standalone pure tests and the Node 26 frontend editor checks passed.
+Ruff lint and formatting passed. Boost tests use HA’s config-entry-specific
+device lookup; reconfiguration tests await the real reload before teardown
+and retain timer-cleanup checks. Runtime files and installed v0.19.0 are unchanged.
+
+Pure rationale and solar parsing tests import the real source through an
+isolated test namespace, leaving the integration initializer to the HA suite.
+Configuration-model tests live in `tests/ha/` because their constants import
+HA’s `Platform` enum. All are included in the complete suite.
+
+The `uv.lock` environment is for development and tests only: Python is
+pinned to 3.14.10, and Home Assistant 2026.11.1 is selected by an explicit
+uv override because pytest-homeassistant-custom-component 0.13.375 declares
+HA 2026.10.4. The integration's HACS runtime minimum in `hacs.json` is
+unchanged. Root conftest loads Home Assistant and the plugin only when both
+are installed; otherwise pure tests remain runnable with pytest alone. The
+compatibility shim for the plugin's removed logger helper raises if called.
+
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements_test.txt
-.venv/bin/pytest            # run the test suite
-.venv/bin/ruff check . && .venv/bin/ruff format --check .
+uv sync --locked
+uv run pytest            # run the test suite
+uv run ruff check . && uv run ruff format --check .
 ```
 
 The scheduling engine ([`engine.py`](custom_components/load_scheduler/engine.py))

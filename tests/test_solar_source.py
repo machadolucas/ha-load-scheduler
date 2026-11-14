@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import _pure_imports  # noqa: F401 -- registers the isolated pure-module namespace
 import pytest
 
-from custom_components.load_scheduler import solar_source as ss
-from custom_components.load_scheduler.engine import Slot
+# isort: split
+
+from _load_scheduler_unit import solar_source as ss
+from _load_scheduler_unit.engine import Slot
 
 
 def _solcast(powers_kw: list[float], t0: datetime) -> dict:

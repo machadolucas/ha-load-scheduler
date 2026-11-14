@@ -1,4 +1,4 @@
-"""Unit tests for the config→params model (package import; no hass needed)."""
+"""Config mapping tests; model constants depend on HA Platform."""
 
 from __future__ import annotations
 

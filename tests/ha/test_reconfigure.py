@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from homeassistant.config_entries import SOURCE_USER, ConfigSubentryData
+from homeassistant.config_entries import SOURCE_USER, ConfigEntryState, ConfigSubentryData
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -67,6 +67,7 @@ async def test_hub_reconfigure_updates_sources(hass: HomeAssistant) -> None:
         },
     )
     assert result["type"] is FlowResultType.ABORT
+    await hass.async_block_till_done()
     assert result["reason"] == "reconfigure_successful"
     assert entry.data["sell_price_entity"] == "sensor.sell"
 
@@ -89,6 +90,7 @@ async def test_subentry_reconfigure_edits_load(hass: HomeAssistant) -> None:
         ],
     )
     subentry_id = next(iter(entry.subentries))
+    previous_coordinator = entry.runtime_data
 
     result = await entry.start_subentry_reconfigure_flow(hass, subentry_id)
     assert result["type"] is FlowResultType.FORM
@@ -102,6 +104,9 @@ async def test_subentry_reconfigure_edits_load(hass: HomeAssistant) -> None:
         },
     )
     assert result["type"] is FlowResultType.ABORT
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data is not previous_coordinator
     assert entry.subentries[subentry_id].data["target_minutes"] == 90
 
 
@@ -148,6 +153,7 @@ async def test_subentry_reconfigure_can_clear_keep_on_price(hass: HomeAssistant)
         result["flow_id"], _load("Heater")
     )
     assert result["type"] is FlowResultType.ABORT
+    await hass.async_block_till_done()
     assert "keep_on_price" not in entry.subentries[subentry_id].data
 
 
@@ -173,6 +179,7 @@ async def test_hub_reconfigure_clearing_an_optional_source_removes_it(
         result["flow_id"], {"name": "Hub", "buy_price_entity": "sensor.prices"}
     )
     assert result["type"] is FlowResultType.ABORT
+    await hass.async_block_till_done()
     assert "sell_price_entity" not in entry.data
     assert entry.data["name"] == "Hub"
 
@@ -187,6 +194,7 @@ async def test_hub_reconfigure_moves_the_unique_id_with_the_buy_sensor(
         result["flow_id"], {"name": "Hub", "buy_price_entity": "sensor.prices2"}
     )
     assert result["type"] is FlowResultType.ABORT
+    await hass.async_block_till_done()
     assert entry.unique_id == "sensor.prices2"
 
 
@@ -244,6 +252,7 @@ async def test_subentry_rejects_a_switch_another_load_controls(hass: HomeAssista
         result["flow_id"], _load("Heater", controlled_entity="switch.shared", target_minutes=45)
     )
     assert result["type"] is FlowResultType.ABORT
+    await hass.async_block_till_done()
     assert entry.subentries[subentry_id].data["target_minutes"] == 45
 
 

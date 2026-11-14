@@ -3,8 +3,7 @@
 Working notes for AI agents and future-me. Read this before changing code.
 
 **Status (beta):** all features below are implemented and covered by tests (run
-them — see Dev workflow). Tests run under a Python **3.13** environment because
-Home Assistant doesn't support 3.14 yet. GitHub Actions runs lint and tests on
+them — see Dev workflow). The locked dev/HA test environment uses Python 3.14.10 and HA 2026.11.1; HACS runtime minimum remains in hacs.json. GitHub Actions runs lint and tests on
 pushes and pull requests; hassfest and HACS validation also run daily. See
 `docs/architecture.md` for the module map and data flow.
 
@@ -114,12 +113,19 @@ the low-temp floor is checked before a plan error and latches with hysteresis. F
 
 ## Dev workflow
 
+The `uv.lock` environment is for development and tests only: Python is
+pinned to 3.14.10, and Home Assistant 2026.11.1 is selected by an explicit
+uv override because pytest-homeassistant-custom-component 0.13.375 declares
+HA 2026.10.4. The integration's HACS runtime minimum in `hacs.json` is
+unchanged. Root conftest loads Home Assistant and the plugin only when both
+are installed; otherwise pure tests remain runnable with pytest alone. The
+compatibility shim for the plugin's removed logger helper raises if called.
+
 ```bash
-# HA-side tests need Python 3.13 (HA doesn't support 3.14):
-uv venv --python 3.13 .venv313
-uv pip install --python .venv313/bin/python -r requirements_test.txt ruff
-.venv313/bin/python -m pytest
-.venv313/bin/ruff check . && .venv313/bin/ruff format --check .
+# Full suite targets the installed HA 2026.11.1 / Python 3.14.10:
+uv sync --locked
+uv run pytest
+uv run ruff check . && uv run ruff format --check .
 ```
 
 - The pure tests (`test_engine`/`price_source`/`windows`/`baseline`) load their

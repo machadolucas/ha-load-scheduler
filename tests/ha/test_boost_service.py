@@ -77,7 +77,11 @@ async def _setup(hass: HomeAssistant) -> MockConfigEntry:
 
 
 def _device_id(hass: HomeAssistant, subentry_id: str) -> str:
-    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, subentry_id)})
+    entries = hass.config_entries.async_entries(DOMAIN)
+    assert len(entries) == 1
+    device = dr.async_get(hass).async_get_device_by_identifier(
+        (DOMAIN, subentry_id), entries[0].entry_id
+    )
     assert device is not None
     return device.id
 
