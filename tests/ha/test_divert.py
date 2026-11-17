@@ -342,6 +342,8 @@ async def test_low_temp_floor_heats_without_price_data(hass: HomeAssistant) -> N
     hass.states.async_set("sensor.inside", "20")  # warm: nothing to do yet
     entry = await _setup(hass, {}, _FLOOR, controlled="input_boolean.floor", state="off")
     sid = next(iter(entry.subentries))
+    # A dead feed, not a brief dropout: past the last-good-prices grace.
+    entry.runtime_data._last_good_at = None
     hass.states.async_set("sensor.prices", "unavailable", {})
     await entry.runtime_data.async_refresh()
     await hass.async_block_till_done()

@@ -126,7 +126,9 @@ async def test_schedule_sensor_rationale_attributes(hass: HomeAssistant) -> None
     assert attrs["delivered_minutes"] == 0
     assert attrs["remaining_minutes"] == 60
     assert attrs["min_service_remaining"] == 0
-    assert attrs["scheduled_minutes"] == 60
+    # Whole quarters; the first is already a few seconds under way (the fixture
+    # slots start at "now"), and only its remainder is still to come.
+    assert 58 < attrs["scheduled_minutes"] <= 60
     assert attrs["est_cost"] == 0  # no draw_kw configured
     assert attrs["solar_enabled"] is False  # hub has no solar source
     assert attrs["boost_until"] is None
@@ -136,7 +138,7 @@ async def test_schedule_sensor_rationale_attributes(hass: HomeAssistant) -> None
     assert rat is not None
     assert rat["skip_reason"] is None  # the full target was scheduled
     assert rat["mode"] == "non_sequential"
-    assert rat["scheduled_minutes"] == 60
+    assert rat["scheduled_minutes"] == attrs["scheduled_minutes"]
     assert rat["cap"] is None
     assert rat["solar_enabled"] is False
     assert rat["boost"] is False

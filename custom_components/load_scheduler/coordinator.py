@@ -49,8 +49,10 @@ from .const import (
     ISSUE_PRICE_GAP,
     ISSUE_PRICE_UNAVAILABLE,
     ISSUE_UNOWNED_RUN,
+    PRICE_DROPOUT_GRACE_S,
     UNOWNED_RUN_HOURS,
     UPDATE_INTERVAL_MINUTES,
+    UPDATE_TICK_SECOND,
 )
 from .engine import Period, RunSource
 from .models import LoadConfig, build_load_params
@@ -157,7 +159,9 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(minutes=UPDATE_INTERVAL_MINUTES),
+            # No free-running interval: the safety-net tick is pinned to the
+            # clock in ``async_setup_listeners`` (see UPDATE_TICK_SECOND).
+            update_interval=None,
             config_entry=entry,
         )
         self._buy_entity: str = entry.data[CONF_BUY_PRICE_ENTITY]
@@ -186,6 +190,10 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         self._source_errors: set[str] = set()
         self._config_cache: dict[str, tuple[object, LoadConfig]] = {}
         self._keep_on_price_cache: tuple[object, list[price_source.ForecastSlot]] | None = None
+        # Last usable price slots and when they were read, to ride out a brief
+        # price-entity dropout (see PRICE_DROPOUT_GRACE_S).
+        self._last_good_slots: list[engine.Slot] = []
+        self._last_good_at: datetime | None = None
         # True while the price forecast has slots but none covering *now*; kept
         # so the warning is logged on transition, not on every 5-minute tick.
         self._price_gap: bool = False
@@ -473,6 +481,16 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         self.config_entry.async_on_unload(
             async_track_state_change_event(self.hass, watched, self._handle_source_change)
         )
+        # Safety-net replan every 5 minutes, just past the mark, so one always
+        # follows each quarter-hour price boundary within seconds.
+        self.config_entry.async_on_unload(
+            async_track_time_change(
+                self.hass,
+                self._handle_source_change,
+                minute=list(range(0, 60, UPDATE_INTERVAL_MINUTES)),
+                second=UPDATE_TICK_SECOND,
+            )
+        )
         # Rebuild the statistics baseline once a day (slow-changing).
         self.config_entry.async_on_unload(
             async_track_time_change(
@@ -605,6 +623,32 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         return [
             engine.Slot(start=fs.start, end=fs.end, buy=fs.buy, sell=fs.sell) for fs in combined
         ]
+
+    def _ride_out_price_dropout(
+        self, slots: list[engine.Slot], now_utc: datetime
+    ) -> list[engine.Slot]:
+        """Fresh slots, or the last good ones during a brief price dropout.
+
+        A price entity briefly unavailable (template reload, integration
+        restart) left no slots, and every load fell straight to its failsafe
+        start: a water heater whose failsafe window was open ran for the seconds
+        until prices came back. Prices published minutes ago are still right, so
+        they stand in for up to PRICE_DROPOUT_GRACE_S while they still cover
+        *now*. The repair issue still reflects the live entity.
+        """
+        if slots:
+            self._last_good_slots, self._last_good_at = slots, now_utc
+            return slots
+        cached, at = self._last_good_slots, self._last_good_at
+        if (
+            cached
+            and at is not None
+            and (now_utc - at).total_seconds() <= PRICE_DROPOUT_GRACE_S
+            and any(s.start <= now_utc < s.end for s in cached)
+        ):
+            _LOGGER.debug("Price source unusable; planning on prices read at %s", at)
+            return cached
+        return slots
 
     def _forecast_slots(
         self, real: list[price_source.ForecastSlot]
@@ -946,6 +990,8 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         """Recompute every load's plan, allocating solar excess by priority."""
         self._init_runtime()  # pick up newly-added subentries
 
+        now = dt_util.now()  # local: windows anchor to wall-clock
+        now_utc = dt_util.utcnow()
         try:
             base_slots = self._price_slots()
         except price_source.PriceFormatError as err:
@@ -953,9 +999,8 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
             base_slots = []
 
         self._update_price_issue(has_slots=bool(base_slots))
+        base_slots = self._ride_out_price_dropout(base_slots, now_utc)
         residual = self._excess_by_slot(base_slots) if base_slots else {}
-        now = dt_util.now()  # local: windows anchor to wall-clock
-        now_utc = dt_util.utcnow()
         self._update_price_gap_issue(base_slots, now_utc)
         self._refresh_competing_issues()
         await self._maybe_refresh_delivered(now_utc)

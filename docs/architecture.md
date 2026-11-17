@@ -58,7 +58,23 @@ solar entity ─┘ solar_source + baseline → excess ───┤
 - **The engine runs in UTC** and never calls `now()`. `price_source` normalizes
   every slot to UTC so all engine arithmetic is DST-free; `windows` anchors to
   local wall-clock and the coordinator passes an explicit `now`.
-- **Durations are minutes**; the final run is trimmed to the exact minute.
+- **Durations are minutes.** Scattered (non-sequential, no `min_run`/`min_off`)
+  runs are bought in **whole quarter-hours** (`QUANTUM_MINUTES`; hourly slots
+  are cut into quarters), rounded up, and a need under `TAIL_DEADBAND_MINUTES`
+  (5) buys nothing. Nothing is trimmed to the minute any more: delivered-today
+  is measured to the second, and exact-minute trimming left runs of seconds and
+  sub-minute holes the relay clicked through (2026-11-17). The quarter in
+  progress counts as a whole quarter; a stopped load starts in it only while
+  ≥ 10 min of it remain, and a running load with a target finishes it once its
+  need drops under the dead-band. Contiguous (sequential, `min_run`) runs keep
+  exact minutes.
+- **A brief price dropout is ridden out.** The coordinator keeps the last good
+  slots for `PRICE_DROPOUT_GRACE_S` (15 min) while they still cover now, so a
+  10-second unavailable price entity no longer flips loads to their failsafe.
+- **A period end replans before it acts.** The actuator's boundary wake-up
+  refreshes the coordinator first when a period ends there, and the 5-minute
+  safety-net replan is pinned to the clock (`:00:02`, `:05:02`, …) rather than
+  free-running from start-up.
 - **Candidate slots are clipped to the window.** A slot straddling `now` or the
   deadline is admitted (so a run already under way stays eligible) but only its
   in-window part is budgeted and scheduled — otherwise the plan spends target

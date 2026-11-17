@@ -76,7 +76,8 @@ function fmtRelative(iso) {
 
 function fmtClock(iso) {
   if (!iso) return "—";
-  const d = new Date(iso);
+  // Nearest minute, not truncated: an end at 23:29:50 is "23:30", not "23:29".
+  const d = new Date(Math.round(new Date(iso).getTime() / 60000) * 60000);
   const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const sameDay = d.toDateString() === new Date().toDateString();
   return sameDay ? time : `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;

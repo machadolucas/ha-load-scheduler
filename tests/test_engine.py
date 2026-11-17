@@ -150,28 +150,78 @@ def test_non_sequential_merges_contiguous():
     assert periods[0].minutes == pytest.approx(30)
 
 
-def test_non_sequential_fractional_trim_does_not_split_run():
-    # The priciest slot is time-FIRST; trimming the overshoot off it mid-run used
-    # to leave a sub-minute gap that split one contiguous run into two periods.
-    # The trim must come off the tail so the run stays merged.
+def test_non_sequential_fractional_target_is_whole_quarters_in_one_run():
+    # 47.3 minutes is rounded up to four whole quarters; nothing is trimmed, so
+    # the run stays one period on quarter-hour edges.
     start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
     slots = make_slots(start, [5, 1, 1, 1])  # first slot is the priciest
     params = LoadParams(
         mode=ScheduleMode.NON_SEQUENTIAL, target_minutes=47.3, window=full_window(slots)
     )
     periods = engine.plan_non_sequential(slots, params)
-    assert len(periods) == 1  # one contiguous run, not split by the trim
-    assert total_minutes(periods) == pytest.approx(47.3)
+    assert [(p.start, p.end) for p in periods] == [(start, slots[-1].end)]
 
 
-def test_non_sequential_trims_to_exact_minutes():
+def test_non_sequential_rounds_up_to_whole_quarters():
     start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
     slots = make_slots(start, [1, 2, 9, 9])
     params = LoadParams(
         mode=ScheduleMode.NON_SEQUENTIAL, target_minutes=20, window=full_window(slots)
     )
     periods = engine.plan_non_sequential(slots, params)
-    assert total_minutes(periods) == pytest.approx(20)
+    assert [(p.start, p.end) for p in periods] == [(start, slots[1].end)]
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"), [(2.6, 0), (4.9, 0), (5.0, 15), (17.6, 30), (47.6, 60)]
+)
+def test_non_sequential_leftover_below_the_deadband_buys_nothing(target, expected):
+    # Delivered-today is measured to the second: a leftover of seconds or a few
+    # minutes is noise, not need, and must not buy a whole quarter; anything
+    # larger is rounded up to whole quarters.
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    slots = make_slots(start, [1, 2, 3, 4, 5, 6])
+    params = LoadParams(
+        mode=ScheduleMode.NON_SEQUENTIAL, target_minutes=target, window=full_window(slots)
+    )
+    assert total_minutes(engine.plan_non_sequential(slots, params)) == pytest.approx(expected)
+
+
+def test_hourly_feed_is_bought_in_quarters():
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    slots = make_slots(start, [9, 1, 9], slot_minutes=60)
+    params = LoadParams(
+        mode=ScheduleMode.NON_SEQUENTIAL, target_minutes=15, window=full_window(slots)
+    )
+    periods = engine.plan_non_sequential(slots, params)
+    cheap = start + timedelta(hours=1)
+    assert [(p.start, p.end) for p in periods] == [(cheap, cheap + timedelta(minutes=15))]
+
+
+def test_fractional_floor_does_not_leave_a_hole_mid_run():
+    # 2026-11-17: 0.16 min delivered left a 44.84-min floor before midnight. The
+    # floor split the dearest quarter at 14.84 min and its 10-s remainder was
+    # never bought: 23:15-23:29:50 + 23:30-00:00, two relay clicks.
+    t0 = datetime(2026, 11, 17, 20, 0, tzinfo=UTC)  # 22:00 Helsinki
+    # 22:00 … 23:00 dear, 23:15 0.0998, 23:30/23:45 0.0866, then cheap night.
+    prices = [0.2] * 5 + [0.0998, 0.0866, 0.0866] + [0.084] * 20
+    slots = make_slots(t0, prices)
+    midnight = datetime(2026, 11, 17, 22, 0, tzinfo=UTC)
+    params = LoadParams(
+        mode=ScheduleMode.NON_SEQUENTIAL,
+        target_minutes=284.84,
+        min_service_minutes=44.84,
+        min_service_by=midnight,
+        window=(t0, slots[-1].end),
+    )
+    periods = engine.plan_non_sequential(slots, params)
+    # 19 whole quarters in one run: the 23:15 quarter whole, then the night.
+    assert [(p.start, p.end) for p in periods] == [
+        (slots[5].start, slots[5].start + timedelta(minutes=19 * 15))
+    ]
+    for p in periods:
+        for t in (p.start, p.end):
+            assert t.second == 0 and t.minute % 15 == 0
 
 
 def test_non_sequential_cap_limits_discretionary():
@@ -374,20 +424,32 @@ def test_min_run_drops_short_fragment():
 
 
 def test_partly_elapsed_slot_is_clipped_to_the_window():
-    # The window opens 10 min into the first 15-min slot: only 5 of its minutes
-    # are still buyable, so the target must be topped up from the next slot.
+    # The window opens 10 min into the first 15-min slot: a running load may use
+    # its last 5 minutes (they extend the run), then tops up from the next slot.
     start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
     slots = make_slots(start, [1, 1, 9, 9])
     params = LoadParams(
         mode=ScheduleMode.NON_SEQUENTIAL,
         target_minutes=20,
         window=(start + timedelta(minutes=10), slots[-1].end),
+        running_minutes=10,
     )
     periods = engine.plan_non_sequential(slots, params)
-    assert total_minutes(periods) == pytest.approx(20)
-    assert periods[0].start == start + timedelta(minutes=10)  # not the slot boundary
-    # The 20 minutes end inside the cheap pair, never spilling into the 9s.
-    assert periods[-1].end <= slots[1].end
+    assert [(p.start, p.end) for p in periods] == [(start + timedelta(minutes=10), slots[1].end)]
+
+
+def test_stopped_load_does_not_start_in_the_clipped_quarter():
+    # Off at 00:10: starting now would be a 5-minute run unless the next quarter
+    # is bought too; the plan starts on the next quarter boundary instead.
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    slots = make_slots(start, [1, 9, 1, 9])
+    params = LoadParams(
+        mode=ScheduleMode.NON_SEQUENTIAL,
+        target_minutes=15,
+        window=(start + timedelta(minutes=10), slots[-1].end),
+    )
+    periods = engine.plan_non_sequential(slots, params)
+    assert [(p.start, p.end) for p in periods] == [(slots[2].start, slots[2].end)]
 
 
 def test_slot_overrunning_the_window_is_clipped_at_the_deadline():
@@ -834,7 +896,9 @@ def test_small_floor_does_not_exempt_the_whole_slot_from_the_cap():
         min_service_minutes=5,
     )
     periods = engine.compute_plan(slots, params)
-    assert total_minutes(periods) == pytest.approx(5)
+    # Rounded up to one quarter: the exemption overshoots by under a quarter,
+    # never by the rest of the hour.
+    assert total_minutes(periods) == pytest.approx(15)
 
 
 def test_floor_split_remainder_is_still_used_when_under_cap():
@@ -1021,8 +1085,12 @@ def test_plans_across_dst_run_real_minutes_inside_the_window(day, extra, flat):
         assert [(p.start, p.end) for p in periods] == [(cheap, cheap + timedelta(hours=2))]
     else:
         # In UTC: PEP 495 makes an inter-zone == with an ambiguous local time
-        # (the repeated autumn hour) always False.
-        assert periods[0].start.astimezone(UTC) == window[0].astimezone(UTC)
+        # (the repeated autumn hour) always False. A stopped scattered load
+        # waits for the next quarter rather than start in the clipped one.
+        expected = window[0].astimezone(UTC)
+        if extra == dict(mode=ScheduleMode.NON_SEQUENTIAL):
+            expected = datetime(2026, month, day, 1, 0, tzinfo=UTC)
+        assert periods[0].start.astimezone(UTC) == expected
 
 
 # --------------------------------------------------------------------------- #
@@ -1122,6 +1190,32 @@ def test_replay_non_sequential_pin_stops_at_min_run_despite_stale_delivered():
     runs = _replay(slots, make, 360, on_at_start=True)
     assert runs[0] == (-1, 29)  # exactly min_run, then off in the dear stretch
     assert all(nxt[0] - prev[1] >= 30 for prev, nxt in zip(runs, runs[1:], strict=False))
+
+
+def test_replay_non_sequential_never_makes_a_run_shorter_than_a_quarter():
+    # Replanned every minute with delivered lagging two minutes (the
+    # coordinator's cache) and a deadline floor: every run spans whole quarters
+    # and starts and ends on quarter edges.
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    prices = [0.3, 0.1, 0.25, 0.1, 0.12, 0.3, 0.11, 0.1] * 6
+
+    slots = make_slots(start, prices)
+
+    def make(now, delivered, *, running, stopped):
+        return LoadParams(
+            mode=ScheduleMode.NON_SEQUENTIAL,
+            target_minutes=max(0.0, 100 - delivered),
+            min_service_minutes=max(0.0, 40 - delivered),
+            min_service_by=start + timedelta(hours=4),
+            window=(now, slots[-1].end),
+            running_minutes=running,
+            stopped_minutes=stopped,
+            finish_quarter=True,
+        )
+
+    runs = _replay(slots, make, 12 * 60, delivered_lag=2)
+    assert runs
+    assert all(a % 15 == 0 and b % 15 == 0 and b - a >= 15 for a, b in runs), runs
 
 
 # DST correctness is handled at the boundary, not here: price_source normalises

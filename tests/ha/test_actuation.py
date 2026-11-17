@@ -155,3 +155,40 @@ async def test_target_number_shows_every_click_within_the_refresh_debounce(
             "number", "set_value", {"entity_id": number_id, "value": value}, blocking=True
         )
     assert float(hass.states.get(number_id).state) == 60
+
+
+async def test_period_end_replans_before_switching_off(hass: HomeAssistant, freezer) -> None:
+    # 2026-11-16 07:45: a plan a few minutes old ended the run; the actuator
+    # switched the heater off at the boundary and the next tick, 40 s later,
+    # switched it back on. A period end must replan first and act on that.
+    async_mock_service(hass, "homeassistant", "turn_on")
+    off = async_mock_service(hass, "homeassistant", "turn_off")
+    entry = await _setup(
+        hass,
+        {
+            "name": "Heater",
+            "mode": "non_sequential",
+            "target_minutes": 15,
+            "controlled_entity": "input_boolean.heater",
+        },
+        cheap=(0,),
+        controlled_state="off",
+    )
+    coord = entry.runtime_data
+    sid = next(iter(entry.subentries))
+    hass.states.async_set("input_boolean.heater", "on")  # our command landed
+    await hass.async_block_till_done()
+    (period,) = coord.data[sid].periods
+    # The need grows without an event that would replan (as delivery measured
+    # meanwhile can shrink or keep it): only a replan at the boundary sees it.
+    coord.runtime_for(sid).target_minutes = 45
+
+    # Fire only the actuator's boundary wake-up: jumping the clock with
+    # async_fire_time_changed would also run the 5-minute replan tick.
+    freezer.move_to(period.end)
+    coord.actuator._unsub_boundary()  # it is fired by hand here instead
+    coord.actuator._boundary_fired(period.end)
+    await hass.async_block_till_done()
+
+    assert not _called_for(off, "input_boolean.heater")
+    assert coord.data[sid].active_period(period.end) is not None

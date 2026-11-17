@@ -168,6 +168,7 @@ class LoadActuator:
         self._reconciling = False
         self._reconcile_again = False
         self._unsub_boundary = None
+        self._next_boundary: datetime | None = None
         self._unsubs: list = []
 
     # ── lifecycle ────────────────────────────────────────────────────────────
@@ -886,6 +887,7 @@ class LoadActuator:
             self._unsub_boundary()
             self._unsub_boundary = None
         bounds = self._boundaries_after(dt_util.utcnow())
+        self._next_boundary = min(bounds) if bounds else None
         if bounds:
             self._unsub_boundary = async_track_point_in_time(
                 self._hass, self._boundary_fired, min(bounds)
@@ -894,5 +896,22 @@ class LoadActuator:
     @callback
     def _boundary_fired(self, _now) -> None:
         self._unsub_boundary = None
-        self._evaluate("boundary")
+        fired, self._next_boundary = self._next_boundary, None
+        if fired is not None and any(
+            p.end == fired for plan in (self._coordinator.data or {}).values() for p in plan.periods
+        ):
+            # A period ends here. Replan before acting on it: a plan a few
+            # minutes old can end a run that the plan made now would continue
+            # (delivery measured since, a slot that just became the cheapest),
+            # and acting first switched the load off until the next tick put it
+            # back on — a 40-second off/on click mid-run.
+            self._coordinator.config_entry.async_create_task(
+                self._hass, self._refresh_then_evaluate(), "ls_boundary_refresh"
+            )
+        else:
+            self._evaluate("boundary")
         self._schedule_next_boundary()
+
+    async def _refresh_then_evaluate(self) -> None:
+        await self._coordinator.async_refresh()
+        self._evaluate("boundary")

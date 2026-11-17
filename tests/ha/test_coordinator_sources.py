@@ -9,7 +9,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
 
-from custom_components.load_scheduler.const import DOMAIN, SUBENTRY_TYPE_LOAD
+from custom_components.load_scheduler.const import (
+    DOMAIN,
+    PRICE_DROPOUT_GRACE_S,
+    SUBENTRY_TYPE_LOAD,
+)
 from custom_components.load_scheduler.models import LoadConfig
 
 
@@ -132,3 +136,46 @@ async def test_load_config_is_cached_per_subentry(hass: HomeAssistant) -> None:
     coord = entry.runtime_data
     sid = next(iter(entry.subentries))
     assert coord.load_config(sid) is coord.load_config(sid)
+
+
+async def test_brief_price_dropout_keeps_the_plan_not_the_failsafe(hass: HomeAssistant) -> None:
+    # 2026-11-17 00:08: the price entity was unavailable for ~10 s; the failsafe
+    # window (00:00) was open, so the heater ran 8 s. The last good prices must
+    # stand in for a short dropout.
+    now = dt_util.now().replace(minute=0, second=0, microsecond=0)
+    hass.states.async_set("sensor.prices", "ok", {"data_today": _slots(now, 24, 0.1)})
+    entry = await _setup(hass, {}, {**LOAD, "failsafe_start": "00:00:00"})
+    coord = entry.runtime_data
+    sid = next(iter(entry.subentries))
+    # Ends only: the first start is "now", which moves between the two plans.
+    before = [p.end for p in coord.data[sid].periods]
+    assert before
+
+    hass.states.async_set("sensor.prices", "unavailable", {})
+    await coord.async_refresh()
+    plan = coord.data[sid]
+    assert plan.error is None
+    assert [p.end for p in plan.periods] == before
+
+
+async def test_long_price_dropout_falls_back_to_the_failsafe(hass: HomeAssistant) -> None:
+    now = dt_util.now().replace(minute=0, second=0, microsecond=0)
+    hass.states.async_set("sensor.prices", "ok", {"data_today": _slots(now, 24, 0.1)})
+    entry = await _setup(hass, {}, {**LOAD, "failsafe_start": "00:00:00"})
+    coord = entry.runtime_data
+    sid = next(iter(entry.subentries))
+
+    hass.states.async_set("sensor.prices", "unavailable", {})
+    coord._last_good_at = dt_util.utcnow() - timedelta(seconds=PRICE_DROPOUT_GRACE_S + 1)
+    await coord.async_refresh()
+    plan = coord.data[sid]
+    # The failsafe: one block of the target from its fixed start.
+    assert len(plan.periods) == 1
+    assert plan.periods[0].minutes == 60
+    assert dt_util.as_local(plan.periods[0].start).time() == time(0, 0)
+
+
+async def test_safety_net_tick_is_pinned_to_the_clock(hass: HomeAssistant) -> None:
+    entry = await _setup(hass, {}, LOAD)
+    coord = entry.runtime_data
+    assert coord.update_interval is None

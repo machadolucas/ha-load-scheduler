@@ -12,9 +12,9 @@ Design rules that keep it testable and DST-correct:
   boundaries* coming from the price source (which already carry the correct
   UTC offset), never by synthesising ``naive + timedelta(hours=n)``. This is
   what makes 23h/25h DST days work.
-* Durations are tracked in **minutes** (floats) so sub-hour targets are exact;
-  the final run is trimmed to the exact minute, mirroring the legacy LVV
-  template behaviour.
+* Durations are tracked in **minutes** (floats). Scattered runs are bought in
+  whole quarter-hours (``QUANTUM_MINUTES``), rounded up, with leftovers under
+  ``TAIL_DEADBAND_MINUTES`` dropped; contiguous runs keep exact minutes.
 """
 
 from __future__ import annotations
@@ -28,6 +28,22 @@ from enum import StrEnum
 
 # Small tolerance (minutes) for floating-point time comparisons.
 _EPS = 1e-6
+
+# Scattered (non-sequential) runs are bought in whole quarter-hours: the
+# day-ahead market's resolution, and the shortest run worth switching a
+# resistive load for. Longer (hourly) slots are cut into quarters so a 15-min
+# need still fits; the run never starts or ends mid-quarter except where the
+# window clips the quarter in progress.
+QUANTUM_MINUTES = 15.0
+# A leftover need smaller than this buys nothing. Delivered-today is measured to
+# the second, so the remaining target is rarely a whole number of quarters;
+# rounding a few seconds or minutes up to a whole quarter on every replan kept
+# buying "one more" slot, and trimming to the exact minute (the old policy) left
+# runs of seconds and sub-minute holes the relay then clicked through.
+TAIL_DEADBAND_MINUTES = 5.0
+# Picks closer than this are one run. Nothing should produce such a gap any
+# more, but a hole of seconds is never worth an off/on cycle of the relay.
+_MERGE_GAP_SECONDS = 60.0
 
 
 class ScheduleMode(StrEnum):
@@ -131,6 +147,11 @@ class LoadParams:
     # switched off a minute ago could be planned straight back on, breaking
     # ``min_off`` / ``min_separation``.
     stopped_minutes: float | None = None
+    # Scattered loads with a runtime target: a run that is on finishes its
+    # quarter once the need falls under the dead-band (see
+    # ``plan_non_sequential``). Off for loads with no target of their own,
+    # whose runs come from divert or a keep-on price and must stop when those do.
+    finish_quarter: bool = False
 
 
 def effective_cost(slot: Slot, draw_kw: float | None, solar_enabled: bool) -> float:
@@ -229,9 +250,9 @@ def _merge(picks: list[_Pick]) -> list[Period]:
     cur_cost_min = 0.0
     sources: set[RunSource] = set()
     for pick in picks:
-        if periods and abs((periods[-1].end - pick.start).total_seconds()) < _EPS:
-            # Contiguous with the open period: extend it.
-            periods[-1].end = pick.end
+        if periods and (pick.start - periods[-1].end).total_seconds() < _MERGE_GAP_SECONDS:
+            # Contiguous (or within a few seconds) with the open period: extend it.
+            periods[-1].end = max(periods[-1].end, pick.end)
         else:
             # Close out previous weighted average, start a new period.
             if periods:
@@ -277,8 +298,10 @@ def plan_non_sequential(slots: list[Slot], params: LoadParams) -> list[Period]:
 
     The first ``min_service_minutes`` are filled from the cheapest slots
     **regardless of price** (anti-starvation); the remaining discretionary
-    minutes are only filled from slots at or below ``cap``. The final, most
-    expensive selected slot is trimmed to land on the exact target minute.
+    minutes are only filled from slots at or below ``cap``. Both are bought in
+    whole quarter-hours, rounded up, with a leftover under
+    ``TAIL_DEADBAND_MINUTES`` dropped, so no run is shorter than a quarter
+    (bar the one in progress) and none ends mid-quarter.
 
     The guarantee prefers slots finishing before ``min_service_by`` so it lands
     inside the day it is accounted against, but falls back to the whole window
@@ -289,11 +312,15 @@ def plan_non_sequential(slots: list[Slot], params: LoadParams) -> list[Period]:
     ``_plan_runs``).
     """
     target = max(params.target_minutes, params.min_service_minutes)
-    if target <= 0 and _mandatory_minutes(params) <= _EPS:
+    whole_runs = params.min_run_minutes > 0 or params.min_off_minutes > 0
+    # A running scattered load still finishes its quarter (below), so a met
+    # target is no early exit for it.
+    finishing = not whole_runs and params.finish_quarter and params.running_minutes > _EPS
+    if target <= 0 and _mandatory_minutes(params) <= _EPS and not finishing:
         return []
     guaranteed = params.min_service_minutes
     candidates = _window_slots(slots, params.window)
-    if params.min_run_minutes > 0 or params.min_off_minutes > 0:
+    if whole_runs:
         if not candidates:
             return []
         # Without a min_run the run is stepped a native slot at a time; the
@@ -305,12 +332,35 @@ def plan_non_sequential(slots: list[Slot], params: LoadParams) -> list[Period]:
         grid = _Grid(candidates, params)
         return _merge(_plan_runs(grid, params, target, guaranteed, unit))
 
-    costs = [effective_cost(s, params.draw_kw, params.solar_enabled) for s in candidates]
-    # (cost, start, end, source): pass 1 may split a slot, and the unused part
-    # has to re-enter pass 2 as a candidate of its own.
+    # Whole quarter-hours only (see QUANTUM_MINUTES). Quarter the *raw* slots
+    # before clipping so the pieces stay on the quarter-hour grid; the clip then
+    # only shortens the quarter in progress (and the one at the window's end).
+    candidates = _window_slots(_quarter_slots(slots), params.window)
+    # The quarter in progress is clipped to ``now``. A running load may always
+    # use the rest of it (that only carries the run to the boundary). A stopped
+    # load may start in it only while most of it is left: starting with two
+    # minutes to go made a two-minute run, the relay click for nothing that the
+    # quarter-hour policy exists to prevent. A sliver at the window's far end is
+    # dropped below the dead-band for the same reason (it is days away and
+    # replanned long before then).
+    w_start = params.window[0].astimezone(UTC)
+    running = params.running_minutes > _EPS
+    fresh_start_min = QUANTUM_MINUTES - TAIL_DEADBAND_MINUTES
+    candidates = [
+        s
+        for s in candidates
+        if s.minutes >= QUANTUM_MINUTES - _EPS
+        or (s.start == w_start and (running or s.minutes >= fresh_start_min - _EPS))
+        or (s.start != w_start and s.minutes >= TAIL_DEADBAND_MINUTES - _EPS)
+    ]
     pool = [
-        (costs[i], s.start, s.end, _slot_source(s, params.draw_kw, params.solar_enabled))
-        for i, s in enumerate(candidates)
+        (
+            effective_cost(s, params.draw_kw, params.solar_enabled),
+            s.start,
+            s.end,
+            _slot_source(s, params.draw_kw, params.solar_enabled),
+        )
+        for s in candidates
     ]
     # Cheapest first; ties broken by start time for determinism.
     pool.sort(key=lambda c: (c[0], c[1]))
@@ -319,63 +369,93 @@ def plan_non_sequential(slots: list[Slot], params: LoadParams) -> list[Period]:
     taken: set[int] = set()
     acc = 0.0
 
-    # Pass 1: the cap-exempt guarantee, same-day slots first, then anywhere.
-    # Only the guaranteed minutes are exempt: a slot that overshoots the floor
-    # is split at it, and its remainder goes back into the pool so pass 2 can
-    # cap-check it like any other discretionary minute. Taking the whole slot
-    # let a 5-minute floor smuggle 55 above-cap minutes into the plan.
-    rest: list[tuple[float, datetime, datetime, RunSource]] = []
+    def take(i: int) -> None:
+        """Buy pool entry ``i``, crediting the clipped quarter in progress whole.
+
+        Its elapsed part is either delivered already (a running load) or within
+        the dead-band (a fresh start, see ``fresh_start_min``); counting only
+        the minutes left bought one more quarter for the few minutes short.
+        """
+        nonlocal acc
+        cost, start, end, source = pool[i]
+        taken.add(i)
+        picks.append(_Pick(start=start, end=end, cost=cost, source=source))
+        acc += QUANTUM_MINUTES if start == w_start else (end - start).total_seconds() / 60.0
+
+    # A run that is on and whose need has just fallen under the dead-band
+    # (delivery measured meanwhile, or the target met) finishes the quarter it
+    # is in: the plan rounded that need up to this quarter, and dropping it
+    # now stopped the run mid-quarter, a run of a few minutes. A larger need
+    # is placed by price as usual, which may still move the run.
+    if running and params.finish_quarter and target < TAIL_DEADBAND_MINUTES - _EPS:
+        for i, (_cost, start, end, _source) in enumerate(pool):
+            if start == w_start and (end - start).total_seconds() / 60.0 < QUANTUM_MINUTES - _EPS:
+                take(i)
+                break
+
+    # Round up to whole quarters, but a need under the dead-band buys nothing:
+    # it is the remainder of a target already (almost) delivered — seconds
+    # measured on the feedback sensor — not a reason to start the load. Replans
+    # shrink the need as delivery is measured, so the day still converges on
+    # the target, within the dead-band below and a quarter above it.
+    floor_need = guaranteed if guaranteed >= TAIL_DEADBAND_MINUTES - _EPS else 0.0
+    if target < TAIL_DEADBAND_MINUTES - _EPS:
+        target = floor_need
+
+    # Pass 1: the cap-exempt guarantee, same-day quarters first, then anywhere.
+    # Whole quarters, so the exemption overshoots the floor by less than one
+    # quarter. Splitting the quarter at the exact floor minute (the old policy)
+    # left its remainder of seconds to pass 2, which never bought it when dearer:
+    # a 10-s hole mid-run, and a relay click on each side of it.
     for same_day_only in (True, False):
         if params.min_service_by is None and same_day_only:
             continue
-        for i, (cost, start, end, source) in enumerate(pool):
-            need = guaranteed - acc
-            if need <= _EPS:
+        for i, (_cost, _start, end, _source) in enumerate(pool):
+            if floor_need - acc <= _EPS:
                 break
             if i in taken or (same_day_only and end > params.min_service_by):
                 continue
-            taken.add(i)
-            minutes = (end - start).total_seconds() / 60.0
-            if minutes > need + _EPS:
-                cut = start + timedelta(minutes=need)
-                rest.append((cost, cut, end, source))
-                end, minutes = cut, need
-            picks.append(_Pick(start=start, end=end, cost=cost, source=source))
-            acc += minutes
+            take(i)
 
     # Pass 2: discretionary minutes, subject to the cap.
-    pass2 = [c for i, c in enumerate(pool) if i not in taken] + rest
-    pass2.sort(key=lambda c: (c[0], c[1]))
-    for cost, start, end, source in pass2:
-        if acc >= target - _EPS:
+    for i, (cost, _start, _end, _source) in enumerate(pool):
+        if target - acc <= _EPS:
             break
-        if params.cap is not None and cost > params.cap:
+        if i in taken or (params.cap is not None and cost > params.cap):
             continue
-        picks.append(_Pick(start=start, end=end, cost=cost, source=source))
-        acc += (end - start).total_seconds() / 60.0
+        take(i)
 
-    periods = _merge(picks)
-    # Land on the exact target by trimming the overshoot off the *tail* (latest
-    # period). Trimming the most-expensive pick instead can shorten a slot that
-    # sits mid-run, leaving a sub-minute gap that splits one contiguous run into
-    # two periods on the card; the cost difference for a sub-slot trim is
-    # negligible.
-    overshoot = acc - target
-    return _trim_tail(periods, overshoot) if overshoot > _EPS else periods
+    return _merge(picks)
 
 
-def _trim_tail(periods: list[Period], overshoot: float) -> list[Period]:
-    """Remove ``overshoot`` minutes from the end of the (time-ordered) periods."""
-    trimmed = list(periods)
-    while overshoot > _EPS and trimmed:
-        last = trimmed[-1]
-        if last.minutes <= overshoot + _EPS:
-            overshoot -= last.minutes
-            trimmed.pop()
-        else:
-            last.end = last.end - timedelta(minutes=overshoot)
-            overshoot = 0.0
-    return trimmed
+def _quarter_slots(slots: list[Slot]) -> list[Slot]:
+    """Cut slots longer than ``QUANTUM_MINUTES`` into quarters from their start.
+
+    An hourly feed would otherwise force whole hours on a 15-minute need. Each
+    piece keeps the slot's price and a proportional share of its solar excess,
+    which leaves ``effective_cost`` unchanged (see ``_window_slots``).
+    """
+    step = timedelta(minutes=QUANTUM_MINUTES)
+    out: list[Slot] = []
+    for s in slots:
+        if s.minutes <= QUANTUM_MINUTES + _EPS:
+            out.append(s)
+            continue
+        full = (s.end - s.start).total_seconds()
+        t = s.start
+        while t < s.end:
+            e = min(t + step, s.end)
+            out.append(
+                Slot(
+                    start=t,
+                    end=e,
+                    buy=s.buy,
+                    sell=s.sell,
+                    excess_kwh=s.excess_kwh * ((e - t).total_seconds() / full),
+                )
+            )
+            t = e
+    return out
 
 
 class _Grid:

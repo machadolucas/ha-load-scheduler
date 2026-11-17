@@ -147,6 +147,15 @@ TARGET_STEP_KWH = 0.5
 
 # How often the coordinator recomputes as a safety net (event-driven otherwise).
 UPDATE_INTERVAL_MINUTES = 5
+# The safety-net tick runs this many seconds past each 5-minute mark, so a
+# replan lands just after every quarter-hour price boundary instead of at a
+# drift set by when Home Assistant started.
+UPDATE_TICK_SECOND = 2
+# How long the last good price slots stand in for a price entity that has gone
+# unavailable (a template reload, a restart of the price integration) before
+# loads fall back to their failsafe start. Without it a 10-second dropout at
+# 00:08 switched the water heater on through its 00:00 failsafe for 8 seconds.
+PRICE_DROPOUT_GRACE_S = 15 * 60
 
 # Persistence: a Store under .storage/ (included in Home Assistant backups).
 STORAGE_VERSION = 1

@@ -57,9 +57,10 @@ history; this file is the *how*. (The original approved plan,
 - Everything is **timezone-aware**; the engine **never calls `now()`** — pass it.
   It operates in **UTC** (`price_source` normalises slots to UTC), so all
   arithmetic is DST-free; `windows` anchors to local wall-clock.
-- Durations are **minutes** (floats); the final run is trimmed to the exact
-  minute. kWh targets are converted to minutes at the `number` entity, so the
-  engine never sees kWh.
+- Durations are **minutes** (floats). Scattered non-sequential runs are bought
+  in whole quarter-hours, rounded up, with a need under 5 min dropped (see
+  `docs/architecture.md`); contiguous runs keep exact minutes. kWh targets are
+  converted to minutes at the `number` entity, so the engine never sees kWh.
 - `effective_cost(slot)` = `buy` when importing, `sell` (foregone) on solar
   excess, blended when partial.
 - `min_service_minutes` is a cap-exempt floor: `target = max(target,

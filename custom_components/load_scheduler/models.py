@@ -211,6 +211,9 @@ def build_load_params(
         min_run_minutes=cfg.min_run_minutes,
         min_off_minutes=cfg.min_off_minutes,
         min_service_by=_min_service_by(cfg, now, window, delivered_minutes),
+        # Only a load with a runtime target of its own: one that runs on divert
+        # or a keep-on price alone must stay free to stop mid-quarter.
+        finish_quarter=total > 0,
     )
 
 
