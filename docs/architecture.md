@@ -71,6 +71,10 @@ solar entity ─┘ solar_source + baseline → excess ───┤
 - **A brief price dropout is ridden out.** The coordinator keeps the last good
   slots for `PRICE_DROPOUT_GRACE_S` (15 min) while they still cover now, so a
   10-second unavailable price entity no longer flips loads to their failsafe.
+  A freshly started hub (HA restart, reload) has no such cache, so until prices
+  are first read — at most the same 15 min — plans carry the error
+  `awaiting_price_data`. The actuator leaves loads untouched for that error
+  (no failsafe start, no owned run cut), and the price repair waits too.
 - **A period end replans before it acts.** The actuator's boundary wake-up
   refreshes the coordinator first when a period ends there, and the 5-minute
   safety-net replan is pinned to the clock (`:00:02`, `:05:02`, …) rather than

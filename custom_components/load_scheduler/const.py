@@ -156,6 +156,12 @@ UPDATE_TICK_SECOND = 2
 # loads fall back to their failsafe start. Without it a 10-second dropout at
 # 00:08 switched the water heater on through its 00:00 failsafe for 8 seconds.
 PRICE_DROPOUT_GRACE_S = 15 * 60
+# Plan error while a freshly started hub has never read prices (HA restart,
+# integration reload): nothing to plan on and no cache yet. For up to
+# PRICE_DROPOUT_GRACE_S the loads are left as they are instead of going to the
+# failsafe, whose window may be open: the prices usually load seconds later, and
+# the failsafe in between switched a load on (or a run off) for those seconds.
+ERROR_AWAITING_PRICES = "awaiting_price_data"
 
 # Persistence: a Store under .storage/ (included in Home Assistant backups).
 STORAGE_VERSION = 1

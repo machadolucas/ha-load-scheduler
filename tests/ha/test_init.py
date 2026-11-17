@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
 from homeassistant.config_entries import ConfigSubentryData
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
@@ -94,6 +95,7 @@ async def test_disable_switch_empties_plan(hass: HomeAssistant) -> None:
     assert sched.attributes["periods"] == []
 
 
+@pytest.mark.usefixtures("no_startup_grace")
 async def test_no_price_data_reports_status(hass: HomeAssistant) -> None:
     # No sensor.prices state set => price source unusable.
     subentry = ConfigSubentryData(
@@ -117,6 +119,7 @@ async def test_no_price_data_reports_status(hass: HomeAssistant) -> None:
     assert sched.attributes["status"] == "no_price_data"
 
 
+@pytest.mark.usefixtures("no_startup_grace")
 async def test_failsafe_runs_without_price_data(hass: HomeAssistant) -> None:
     # No sensor.prices, but a failsafe start time is configured => a fixed-time
     # run is scheduled instead of erroring out.

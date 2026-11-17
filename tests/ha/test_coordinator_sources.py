@@ -6,11 +6,14 @@ from datetime import datetime, time, timedelta
 
 from homeassistant.config_entries import ConfigSubentryData
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
 
 from custom_components.load_scheduler.const import (
     DOMAIN,
+    ERROR_AWAITING_PRICES,
+    ISSUE_PRICE_UNAVAILABLE,
     PRICE_DROPOUT_GRACE_S,
     SUBENTRY_TYPE_LOAD,
 )
@@ -179,3 +182,44 @@ async def test_safety_net_tick_is_pinned_to_the_clock(hass: HomeAssistant) -> No
     entry = await _setup(hass, {}, LOAD)
     coord = entry.runtime_data
     assert coord.update_interval is None
+
+
+async def test_restart_without_prices_waits_instead_of_running_the_failsafe(
+    hass: HomeAssistant,
+) -> None:
+    # A restart inside the failsafe window used to switch the load on for the
+    # seconds until the price entity loaded. Until prices are first read (or the
+    # grace runs out) the load is left as it is, and no repair is raised.
+    on = async_mock_service(hass, "homeassistant", "turn_on")
+    off = async_mock_service(hass, "homeassistant", "turn_off")
+    hass.states.async_set("switch.heater", "off")
+    start = dt_util.now().replace(second=0, microsecond=0).time()
+    entry = await _setup(
+        hass,
+        {},
+        {**LOAD, "controlled_entity": "switch.heater", "failsafe_start": start.isoformat()},
+    )
+    coord = entry.runtime_data
+    sid = next(iter(entry.subentries))
+    assert coord.data[sid].error == ERROR_AWAITING_PRICES
+    assert coord.data[sid].periods == []
+    assert not on and not off
+    assert ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_PRICE_UNAVAILABLE) is None
+
+    # Prices arrive: an ordinary plan, and the wait is over for good.
+    now = dt_util.now().replace(minute=0, second=0, microsecond=0)
+    hass.states.async_set("sensor.prices", "ok", {"data_today": _slots(now, 24, 0.1)})
+    await hass.async_block_till_done()
+    assert coord.data[sid].error is None
+    assert not coord._awaiting_first_prices(dt_util.utcnow())
+
+
+async def test_startup_wait_ends_with_the_grace(hass: HomeAssistant) -> None:
+    entry = await _setup(hass, {}, {**LOAD, "failsafe_start": "00:00:00"})
+    coord = entry.runtime_data
+    sid = next(iter(entry.subentries))
+    assert coord.data[sid].error == ERROR_AWAITING_PRICES
+    coord._started_at -= timedelta(seconds=PRICE_DROPOUT_GRACE_S + 1)
+    await coord.async_refresh()
+    assert coord.data[sid].error is None  # the failsafe plan
+    assert len(coord.data[sid].periods) == 1

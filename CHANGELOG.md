@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.20.1 — 2026-11-17
+
+- After a Home Assistant restart (or an integration reload), a price entity that
+  has not loaded yet no longer starts the failsafe. For up to 15 minutes, until
+  prices are first read, the schedule shows `awaiting_price_data` and loads are
+  left as they are: a stopped one isn't switched on, and a running one isn't cut.
+  The price repair issue waits as well. Before this, a restart inside a failsafe
+  window switched the load on for the seconds the prices took to load.
+
 ## 0.20.0 — 2026-11-17
 
 - Scattered (non-sequential) loads now run in whole quarter-hours. Hourly price

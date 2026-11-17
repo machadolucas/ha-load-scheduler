@@ -334,6 +334,7 @@ _FLOOR = {
 }
 
 
+@pytest.mark.usefixtures("no_startup_grace")
 async def test_low_temp_floor_heats_without_price_data(hass: HomeAssistant) -> None:
     # C4: the safety floor sat below the plan-error check, so a dead price feed
     # plus a cold room meant no heat at all.
@@ -469,6 +470,7 @@ async def test_floor_release_with_a_valid_plan_falls_through_to_it(
     assert _calls(off, "input_boolean.floor") == 0
 
 
+@pytest.mark.usefixtures("no_startup_grace")
 @pytest.mark.parametrize("coexist", [False, True])
 async def test_owned_floor_run_is_switched_off_after_a_restart_without_prices(
     hass: HomeAssistant, freezer, coexist: bool
@@ -503,6 +505,7 @@ async def test_owned_floor_run_is_switched_off_after_a_restart_without_prices(
     assert _calls(off, "input_boolean.floor") == 1
 
 
+@pytest.mark.usefixtures("no_startup_grace")
 async def test_external_coexist_run_untouched_without_prices(hass: HomeAssistant) -> None:
     async_mock_service(hass, "homeassistant", "turn_on")
     off = async_mock_service(hass, "homeassistant", "turn_off")

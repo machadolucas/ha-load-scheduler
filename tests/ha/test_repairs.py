@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
 from homeassistant.config_entries import ConfigSubentryData
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
@@ -34,6 +35,7 @@ def _entry(hass: HomeAssistant) -> MockConfigEntry:
     )
 
 
+@pytest.mark.usefixtures("no_startup_grace")
 async def test_issue_raised_without_price_data(hass: HomeAssistant) -> None:
     entry = _entry(hass)  # no sensor.prices state
     entry.add_to_hass(hass)

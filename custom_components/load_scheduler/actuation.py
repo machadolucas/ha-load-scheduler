@@ -81,6 +81,7 @@ from .const import (
     DIVERT_ENGAGE_DWELL_S,
     DIVERT_SHED_DWELL_S,
     DIVERT_SHED_MARGIN,
+    ERROR_AWAITING_PRICES,
     EVENT_RUN_ENDED,
     EVENT_RUN_STARTED,
     MANUAL_OVERRIDE_GRACE_S,
@@ -738,6 +739,11 @@ class LoadActuator:
         ):
             return True
         plan = (self._coordinator.data or {}).get(sid)
+        if plan is not None and plan.error == ERROR_AWAITING_PRICES:
+            # Just restarted, prices not loaded yet: keep whatever is running
+            # (or not) as it is until there is a plan. Switching an owned run
+            # off here and back on seconds later was a needless relay cycle.
+            return None
         if plan is None or plan.error:
             # No usable plan (a failsafe run is a plan without an error) and the
             # floor isn't holding it: nothing gives us a reason to keep a run we

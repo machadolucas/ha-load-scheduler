@@ -45,6 +45,7 @@ from .const import (
     DEFAULT_BASELINE_W,
     DEFAULT_FORECAST_PRICE_MARGIN,
     DOMAIN,
+    ERROR_AWAITING_PRICES,
     ISSUE_COMPETING_CONTROLLER,
     ISSUE_PRICE_GAP,
     ISSUE_PRICE_UNAVAILABLE,
@@ -194,6 +195,9 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
         # price-entity dropout (see PRICE_DROPOUT_GRACE_S).
         self._last_good_slots: list[engine.Slot] = []
         self._last_good_at: datetime | None = None
+        # When this hub started: until prices are first read, or the grace runs
+        # out, a missing price feed means "not loaded yet", not "dead".
+        self._started_at: datetime = dt_util.utcnow()
         # True while the price forecast has slots but none covering *now*; kept
         # so the warning is logged on transition, not on every 5-minute tick.
         self._price_gap: bool = False
@@ -650,6 +654,13 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
             return cached
         return slots
 
+    def _awaiting_first_prices(self, now_utc: datetime) -> bool:
+        """Freshly started and no prices read yet, within the grace."""
+        return (
+            self._last_good_at is None
+            and (now_utc - self._started_at).total_seconds() <= PRICE_DROPOUT_GRACE_S
+        )
+
     def _forecast_slots(
         self, real: list[price_source.ForecastSlot]
     ) -> list[price_source.ForecastSlot]:
@@ -998,7 +1009,9 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
             _LOGGER.warning("Price source unusable: %s", err)
             base_slots = []
 
-        self._update_price_issue(has_slots=bool(base_slots))
+        awaiting = not base_slots and self._awaiting_first_prices(now_utc)
+        if not awaiting:  # a feed still loading after a restart is no issue yet
+            self._update_price_issue(has_slots=bool(base_slots))
         base_slots = self._ride_out_price_dropout(base_slots, now_utc)
         residual = self._excess_by_slot(base_slots) if base_slots else {}
         self._update_price_gap_issue(base_slots, now_utc)
@@ -1086,6 +1099,8 @@ class LoadSchedulerCoordinator(DataUpdateCoordinator[dict[str, LoadPlan]]):
                 )
                 periods = engine.compute_plan(slots, params)
                 rat = rationale.explain(slots, params, periods, now=now)
+            elif awaiting:
+                plan.error = ERROR_AWAITING_PRICES
             else:
                 periods = self._failsafe_periods(cfg, rt, now)
                 if not periods:
